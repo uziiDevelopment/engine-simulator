@@ -30,6 +30,7 @@ impl Plugin for VisualsPlugin {
                     animate::animate_valves,
                     animate::animate_cylinder_gas,
                     animate::animate_manifolds,
+                    animate::animate_damage,
                 )
                     .chain()
                     .after(crate::engine::engine_step),
@@ -113,4 +114,33 @@ pub enum ManifoldKind { Intake, Exhaust }
 pub struct ManifoldViz {
     pub kind: ManifoldKind,
     pub material: Handle<StandardMaterial>,
+}
+
+/// What this part's damage colour should be sampled from.
+#[derive(Component, Clone, Copy, Debug)]
+pub enum DamageSource {
+    /// Cylinder block / wall slice for cylinder `i` — drives off `wall_wear`
+    /// and `block_temp`.
+    BlockSlice(usize),
+    /// Connecting-rod `i` — drives off `rod_damage`.
+    Rod(usize),
+    /// Piston `i` — drives off `piston_temp` and `ring_wear` (mild).
+    Piston(usize),
+    /// Piston ring on cylinder `i` — drives off `ring_wear`.
+    PistonRing(usize),
+    /// Crank pin attached to cylinder `i` — drives off `rod_damage`
+    /// (stress concentration mirror).
+    CrankPin(usize),
+}
+
+/// Marker on every part whose surface colour is driven by per-cylinder damage.
+/// `material` is the unique StandardMaterial handle for this part; `base_color`
+/// + `base_emissive` capture the original PBR appearance so we can restore it
+/// when the player toggles damage-view off.
+#[derive(Component, Clone)]
+pub struct DamageVisual {
+    pub source: DamageSource,
+    pub material: Handle<StandardMaterial>,
+    pub base_color: Color,
+    pub base_emissive: LinearRgba,
 }

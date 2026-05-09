@@ -4,9 +4,12 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 use crate::engine::{
-    EngineCore, RunState, ENGINES, FUELS, P_ATM,
+    EngineCore, RunState, ENGINES, FUELS, MATERIAL_CATALOG, P_ATM,
     engine_count, fuel_count,
 };
+// Disambiguate from `bevy::prelude::Material` (a trait) — we want our
+// engine-physics `Material` struct.
+use crate::engine::material::Material as PhysMaterial;
 use crate::visuals::EngineVisual;
 
 pub struct UiPlugin;
@@ -144,6 +147,55 @@ fn ui_panel(
             // ── Audio ────────────────────────────────────────────────────
             ui.checkbox(&mut core.audio_enabled, "Audio Simulation");
             ui.checkbox(&mut core.particles_enabled, "Gas Flow Particles");
+            ui.checkbox(&mut core.damage_view, "Damage View (FEA gradient)");
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            // ── Materials & Damage ───────────────────────────────────────
+            ui.collapsing(egui::RichText::new("Materials & Damage").strong(), |ui| {
+                material_selector(ui, "Block",        &mut core.config.materials.block);
+                material_selector(ui, "Cyl. Wall",    &mut core.config.materials.cylinder_wall);
+                material_selector(ui, "Piston",       &mut core.config.materials.piston);
+                material_selector(ui, "Piston Ring",  &mut core.config.materials.piston_ring);
+                material_selector(ui, "Connecting Rod", &mut core.config.materials.conrod);
+
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Wear Time Scale").small());
+                ui.add(
+                    egui::Slider::new(&mut core.wear_time_scale, 1.0..=1.0e6)
+                        .logarithmic(true)
+                        .custom_formatter(|v, _| format!("{:.0}×", v))
+                );
+                ui.label(egui::RichText::new(
+                    "Multiplies the Archard wear constant. 1× = realistic-slow, \
+                     1e4×+ = damage in seconds of abuse.",
+                ).small().weak());
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Drain Oil").clicked() {
+                        core.oil.drain();
+                    }
+                    if ui.button("Refill Oil").clicked() {
+                        let cfg = core.oil_config.clone();
+                        core.oil.refill(&cfg);
+                    }
+                });
+                if ui.button("Reset Damage (heal everything)").clicked() {
+                    for c in core.cylinders.iter_mut() {
+                        c.wall_wear = 0.0;
+                        c.ring_wear = 0.0;
+                        c.rod_damage = 0.0;
+                        c.block_temp = 290.0;
+                        c.piston_temp = 290.0;
+                    }
+                    core.engine_seized = false;
+                    let cfg = core.oil_config.clone();
+                    core.oil.refill(&cfg);
+                }
+            });
 
             ui.add_space(8.0);
             ui.separator();
@@ -212,6 +264,44 @@ fn ui_panel(
 
             telemetry_grid(ui, &core);
 
+            ui.add_space(6.0);
+
+            // ── Seized banner ────────────────────────────────────────────
+            if core.engine_seized {
+                let rect_resp = ui.allocate_response(
+                    egui::vec2(ui.available_width(), 30.0),
+                    egui::Sense::hover(),
+                );
+                let painter = ui.painter();
+                painter.rect_filled(rect_resp.rect, 4.0, egui::Color32::from_rgb(170, 30, 30));
+                painter.text(
+                    rect_resp.rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "ENGINE SEIZED — Reset Damage to recover",
+                    egui::FontId::proportional(14.0),
+                    egui::Color32::WHITE,
+                );
+                ui.add_space(6.0);
+            }
+
+            // ── Oil gauges ───────────────────────────────────────────────
+            ui.label(egui::RichText::new("Lubrication").strong());
+            let oil_kpa = core.oil.pressure / 1000.0;
+            let oil_pct_full = (core.oil.mass / core.oil_config.capacity).clamp(0.0, 1.0);
+            let oil_temp_c = core.oil.temperature - 273.15;
+            let lube = core.oil.lubrication_factor(&core.oil_config);
+            egui::Grid::new("oil_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+                cell(ui, "Oil press.", &format!("{:>5.1} kPa", oil_kpa));
+                cell(ui, "Oil temp",   &format!("{:>5.1} °C",  oil_temp_c));
+                ui.end_row();
+                cell(ui, "Sump",       &format!("{:>3.0}%",    oil_pct_full * 100.0));
+                cell(ui, "Lube",       &format!("{:>3.0}%",    lube * 100.0));
+                ui.end_row();
+                cell(ui, "Visc.",      &format!("{:.3} Pa·s",  core.oil.viscosity));
+                cell(ui, "Frict. Q",   &format!("{:>4.0} W",   core.friction_heat_smoothed));
+                ui.end_row();
+            });
+
             ui.add_space(8.0);
             ui.separator();
             ui.add_space(4.0);
@@ -227,6 +317,28 @@ fn ui_panel(
                         .monospace().size(11.0));
                     pressure_minibar(ui, pr, cyl.temperature, cyl.flash, &core.fuel.flame_color);
                 });
+            }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            // ── Per-cylinder wear / temp ─────────────────────────────────
+            ui.label(egui::RichText::new("Damage").strong());
+            ui.add_space(2.0);
+            for i in 0..core.num_cyl() {
+                let cyl = &core.cylinders[i];
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("Cyl {}", i + 1))
+                        .monospace().size(11.0));
+                    wear_minibar(ui, "Wall", cyl.wall_wear);
+                    wear_minibar(ui, "Ring", cyl.ring_wear);
+                    wear_minibar(ui, "Rod",  cyl.rod_damage);
+                });
+                ui.label(egui::RichText::new(format!(
+                    "    block {:.0} K   piston {:.0} K   σ {:.0} MPa",
+                    cyl.block_temp, cyl.piston_temp, cyl.last_rod_stress / 1.0e6,
+                )).small().monospace());
             }
         });
 }
@@ -351,4 +463,44 @@ fn draw_render_tree(
             ui.label(&name);
         }
     });
+}
+
+// ──────────────── Per-part material picker ──────────────────────────────────
+fn material_selector(ui: &mut egui::Ui, label: &str, current: &mut PhysMaterial) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(format!("{:<13}", label)).small().monospace());
+        let combo_id = format!("mat_{}", label);
+        egui::ComboBox::from_id_salt(combo_id)
+            .width(150.0)
+            .selected_text(current.name)
+            .show_ui(ui, |ui| {
+                for m in MATERIAL_CATALOG {
+                    let selected = current.name == m.name;
+                    if ui.selectable_label(selected, m.name).clicked() {
+                        *current = (*m).clone();
+                    }
+                }
+            });
+    });
+}
+
+// ──────────────── 0..1 damage bar in the FEA gradient ───────────────────────
+fn wear_minibar(ui: &mut egui::Ui, tag: &str, value: f32) {
+    let v = value.clamp(0.0, 1.0);
+    ui.label(egui::RichText::new(tag).small().monospace());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(48.0, 10.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 2.0, egui::Color32::from_gray(36));
+    let mut filled = rect;
+    filled.set_width(rect.width() * v);
+    let (r, g, b) = jet_egui(v);
+    painter.rect_filled(filled, 2.0, egui::Color32::from_rgb(r, g, b));
+}
+
+fn jet_egui(t: f32) -> (u8, u8, u8) {
+    let t = t.clamp(0.0, 1.0);
+    let r = (1.5 - (4.0 * t - 3.0).abs()).clamp(0.0, 1.0);
+    let g = (1.5 - (4.0 * t - 2.0).abs()).clamp(0.0, 1.0);
+    let b = (1.5 - (4.0 * t - 1.0).abs()).clamp(0.0, 1.0);
+    ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
 }

@@ -7,8 +7,8 @@ use std::f32::consts::PI;
 use crate::engine::{EngineCore, VIS_SCALE};
 
 use super::{
-    ConRod, Crankshaft, CylinderGasViz, EngineVisual, ManifoldKind, ManifoldViz,
-    Piston, Valve, ValveKind,
+    ConRod, Crankshaft, CylinderGasViz, DamageSource, DamageVisual, EngineVisual,
+    ManifoldKind, ManifoldViz, Piston, Valve, ValveKind,
 };
 
 /// Spawns static scene elements (floor, lights) that don't depend on engine config.
@@ -76,17 +76,13 @@ pub fn spawn_engine_visuals(
     let crank_pos = cfg.crank_positions(); // number of throw positions along X
 
     // ── Materials ──────────────────────────────────────────────────────────
+    // Most parts use a unique material handle so the damage animator can tint
+    // each one independently from its cylinder's wear / temperature.  Shared
+    // handles are kept only for cosmetic parts that aren't damage-tracked
+    // (heads, valves, runners).
     let crank_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.82, 0.13, 0.13),
         metallic: 0.7, perceptual_roughness: 0.32, ..default()
-    });
-    let piston_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.18, 0.45, 0.85),
-        metallic: 0.55, perceptual_roughness: 0.35, ..default()
-    });
-    let rod_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.78, 0.78, 0.82),
-        metallic: 0.85, perceptual_roughness: 0.22, ..default()
     });
     let flywheel_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.10, 0.10, 0.12),
@@ -118,6 +114,10 @@ pub fn spawn_engine_visuals(
     let pulley_mesh        = meshes.add(Cylinder::new(0.060 * s, 0.025 * s));
     let valve_head_mesh    = meshes.add(Cylinder::new(0.017 * s, 0.008 * s));
     let valve_stem_mesh    = meshes.add(Cylinder::new(0.004 * s, 0.06 * s));
+    // Piston ring: a thin annular cylinder hugging the bore.
+    let ring_mesh          = meshes.add(Cylinder::new(bore * 0.50 * s, 0.010 * s));
+    // Block slice — a chunky cuboid wrapping the bore, colours with damage.
+    let block_slice_mesh   = meshes.add(Cuboid::new(0.092 * s, 0.18 * s, 0.092 * s));
 
     let crank_axis_rot = Quat::from_rotation_z(PI / 2.0);
 
@@ -157,12 +157,31 @@ pub fn spawn_engine_visuals(
         let pin_y = phi.cos() * crank_radius * s;
         let pin_z = phi.sin() * crank_radius * s;
 
-        commands.spawn((EngineVisual, Name::new(format!("Crank Pin {}", pos + 1)), PbrBundle {
-            mesh: crank_pin_mesh.clone(),
-            material: crank_mat.clone(),
-            transform: Transform::from_xyz(x, pin_y, pin_z).with_rotation(crank_axis_rot),
+        // Each crank pin gets its own material so the damage animator can tint
+        // it with the rod-stress of the cylinder hanging off it.
+        let pin_base = Color::srgb(0.82, 0.13, 0.13);
+        let pin_emissive = LinearRgba::BLACK;
+        let pin_mat = materials.add(StandardMaterial {
+            base_color: pin_base,
+            metallic: 0.7, perceptual_roughness: 0.32,
             ..default()
-        })).set_parent(crank_entity);
+        });
+        commands.spawn((
+            EngineVisual,
+            Name::new(format!("Crank Pin {}", pos + 1)),
+            DamageVisual {
+                source: DamageSource::CrankPin(cyl_idx),
+                material: pin_mat.clone(),
+                base_color: pin_base,
+                base_emissive: pin_emissive,
+            },
+            PbrBundle {
+                mesh: crank_pin_mesh.clone(),
+                material: pin_mat,
+                transform: Transform::from_xyz(x, pin_y, pin_z).with_rotation(crank_axis_rot),
+                ..default()
+            },
+        )).set_parent(crank_entity);
 
         for (w_idx, &dx) in [-0.034 * s, 0.034 * s].iter().enumerate() {
             commands.spawn((EngineVisual, Name::new(format!("Counterweight {}-{}", pos + 1, w_idx + 1)), PbrBundle {
@@ -202,8 +221,10 @@ pub fn spawn_engine_visuals(
 
     // ── Group entities ───────────────────────────────────────────────────────
     let grp_pistons = commands.spawn((EngineVisual, Name::new("Pistons"), SpatialBundle::default())).id();
+    let grp_rings = commands.spawn((EngineVisual, Name::new("Piston Rings"), SpatialBundle::default())).id();
     let grp_rods = commands.spawn((EngineVisual, Name::new("Connecting Rods"), SpatialBundle::default())).id();
     let grp_bores = commands.spawn((EngineVisual, Name::new("Cylinder Bores"), SpatialBundle::default())).id();
+    let grp_block = commands.spawn((EngineVisual, Name::new("Block Slices"), SpatialBundle::default())).id();
     let grp_valves = commands.spawn((EngineVisual, Name::new("Valves"), SpatialBundle::default())).id();
     let grp_heads = commands.spawn((EngineVisual, Name::new("Cylinder Heads"), SpatialBundle::default())).id();
     let grp_manifolds = commands.spawn((EngineVisual, Name::new("Manifolds"), SpatialBundle::default())).id();
@@ -217,34 +238,92 @@ pub fn spawn_engine_visuals(
         // Tilted position: piston moves along the bank axis
         let pos = tilt_position(x, y_p, 0.0, tilt);
 
-        // ── Piston ─────────────────────────────────────────────────────────
+        // ── Piston (unique material — drives off piston_temp / ring_wear) ──
+        let piston_base = Color::srgb(0.18, 0.45, 0.85);
+        let piston_emissive = LinearRgba::BLACK;
+        let piston_mat_unique = materials.add(StandardMaterial {
+            base_color: piston_base,
+            metallic: 0.55, perceptual_roughness: 0.35,
+            ..default()
+        });
         commands.spawn((
             EngineVisual,
             Name::new(format!("Piston {}", i + 1)),
             Piston { idx: i, bank_tilt: tilt },
+            DamageVisual {
+                source: DamageSource::Piston(i),
+                material: piston_mat_unique.clone(),
+                base_color: piston_base,
+                base_emissive: piston_emissive,
+            },
             PbrBundle {
                 mesh: piston_mesh.clone(),
-                material: piston_mat.clone(),
+                material: piston_mat_unique,
                 transform: Transform::from_translation(pos)
                     .with_rotation(Quat::from_rotation_x(tilt)),
                 ..default()
             },
         )).set_parent(grp_pistons);
 
-        // ── Connecting rod ─────────────────────────────────────────────────
+        // ── Piston ring stack (3 thin rings around the piston crown) ───────
+        let ring_base = Color::srgb(0.85, 0.85, 0.88);
+        let ring_emissive = LinearRgba::BLACK;
+        for ring_idx in 0..3 {
+            let ring_mat = materials.add(StandardMaterial {
+                base_color: ring_base,
+                metallic: 0.9, perceptual_roughness: 0.2,
+                ..default()
+            });
+            // Stack three rings just below the piston crown.
+            let ring_offset_y = 0.030 * s - 0.014 * s * ring_idx as f32;
+            let ring_pos = tilt_position(x, y_p + ring_offset_y, 0.0, tilt);
+            commands.spawn((
+                EngineVisual,
+                Name::new(format!("Piston Ring {}-{}", i + 1, ring_idx + 1)),
+                Piston { idx: i, bank_tilt: tilt }, // animate alongside piston
+                DamageVisual {
+                    source: DamageSource::PistonRing(i),
+                    material: ring_mat.clone(),
+                    base_color: ring_base,
+                    base_emissive: ring_emissive,
+                },
+                PbrBundle {
+                    mesh: ring_mesh.clone(),
+                    material: ring_mat,
+                    transform: Transform::from_translation(ring_pos)
+                        .with_rotation(Quat::from_rotation_x(tilt)),
+                    ..default()
+                },
+            )).set_parent(grp_rings);
+        }
+
+        // ── Connecting rod (unique material — drives off rod_damage) ───────
+        let rod_base = Color::srgb(0.78, 0.78, 0.82);
+        let rod_emissive = LinearRgba::BLACK;
+        let rod_mat_unique = materials.add(StandardMaterial {
+            base_color: rod_base,
+            metallic: 0.85, perceptual_roughness: 0.22,
+            ..default()
+        });
         commands.spawn((
             EngineVisual,
             Name::new(format!("Connecting Rod {}", i + 1)),
             ConRod { idx: i, base_x: x, bank_tilt: tilt },
+            DamageVisual {
+                source: DamageSource::Rod(i),
+                material: rod_mat_unique.clone(),
+                base_color: rod_base,
+                base_emissive: rod_emissive,
+            },
             PbrBundle {
                 mesh: rod_mesh.clone(),
-                material: rod_mat.clone(),
+                material: rod_mat_unique,
                 transform: Transform::from_translation(pos * 0.5),
                 ..default()
             },
         )).set_parent(grp_rods);
 
-        // ── Translucent cylinder bore ──────────────────────────────────────
+        // ── Translucent cylinder bore (gas pressure viz, unchanged) ────────
         let bore_y = rod_length * s + 0.04 * s;
         let bore_pos = tilt_position(x, bore_y, 0.0, tilt);
 
@@ -271,6 +350,37 @@ pub fn spawn_engine_visuals(
                 ..default()
             },
         )).set_parent(grp_bores);
+
+        // ── Solid block slice wrapping the bore — drives off wall_wear / block_temp ──
+        // A translucent shell so the gas viz inside still reads.  In normal
+        // viewing it's near-invisible; in damage view it lights up the FEA gradient.
+        let block_base = Color::srgba(0.30, 0.32, 0.36, 0.10);
+        let block_emissive = LinearRgba::BLACK;
+        let block_mat = materials.add(StandardMaterial {
+            base_color: block_base,
+            metallic: 0.3, perceptual_roughness: 0.6,
+            alpha_mode: AlphaMode::Blend,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        });
+        commands.spawn((
+            EngineVisual,
+            Name::new(format!("Block Slice {}", i + 1)),
+            DamageVisual {
+                source: DamageSource::BlockSlice(i),
+                material: block_mat.clone(),
+                base_color: block_base,
+                base_emissive: block_emissive,
+            },
+            PbrBundle {
+                mesh: block_slice_mesh.clone(),
+                material: block_mat,
+                transform: Transform::from_translation(bore_pos)
+                    .with_rotation(Quat::from_rotation_x(tilt)),
+                ..default()
+            },
+        )).set_parent(grp_block);
 
         // (Combustion flash sphere replaced by particle bursts — see particles.rs)
 

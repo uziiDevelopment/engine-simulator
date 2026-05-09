@@ -47,6 +47,10 @@ pub struct EngineCore {
     pub fuel_idx:       usize,
     pub audio_enabled:  bool,
     pub particles_enabled: bool,
+    /// When true, parts are rendered with the FEA-style heat/damage colormap
+    /// (blue → cyan → green → yellow → orange → red) instead of their PBR
+    /// material colours.
+    pub damage_view: bool,
 
     // Sub-models (Vec allows variable cylinder counts)
     pub cylinders: Vec<CylinderState>,
@@ -122,6 +126,7 @@ impl EngineCore {
             fuel_idx,
             audio_enabled: true,
             particles_enabled: true,
+            damage_view: false,
             cylinders,
             intake,
             exhaust,

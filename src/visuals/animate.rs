@@ -8,8 +8,8 @@ use crate::engine::{
 };
 
 use super::{
-    ConRod, Crankshaft, CylinderGasViz, ManifoldKind, ManifoldViz, Piston,
-    Valve, ValveKind,
+    ConRod, Crankshaft, CylinderGasViz, DamageSource, DamageVisual,
+    ManifoldKind, ManifoldViz, Piston, Valve, ValveKind,
 };
 
 // ─────────────────────────────────── Crank ──────────────────────────────────
@@ -174,4 +174,96 @@ fn pressure_gradient(t: f32) -> (f32, f32, f32) {
         ( 0.15 + 0.85 * u, 0.95 - 0.65 * u, 0.70 - 0.65 * u )
     }
 }
+
+// ──────────────── FEA-style "jet" colormap (blue→cyan→green→yellow→orange→red) ──
+//
+// Standard six-stop ramp used in CFD/FEA visualisations.  `t` clamped to 0..=1.
+// 0.0 → deep blue (cool/healthy), 1.0 → red (hot/destroyed).
+fn jet_colormap(t: f32) -> (f32, f32, f32) {
+    let t = t.clamp(0.0, 1.0);
+    let r = (1.5 - (4.0 * t - 3.0).abs()).clamp(0.0, 1.0);
+    let g = (1.5 - (4.0 * t - 2.0).abs()).clamp(0.0, 1.0);
+    let b = (1.5 - (4.0 * t - 1.0).abs()).clamp(0.0, 1.0);
+    (r, g, b)
+}
+
+// ──────────────── Damage / heat colour driver ───────────────────────────────
+//
+// When `core.damage_view` is on, every [`DamageVisual`] part is recoloured by
+// the FEA jet gradient based on its damage source (wall wear, ring wear, rod
+// fatigue, piston / block temperature).  Off → restores the part's original
+// PBR colour.
+pub fn animate_damage(
+    core: Res<EngineCore>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    q: Query<&DamageVisual>,
+) {
+    for vis in &q {
+        let Some(mat) = materials.get_mut(&vis.material) else { continue };
+
+        if !core.damage_view {
+            // Restore original look every frame so toggling off snaps back.
+            mat.base_color = vis.base_color;
+            mat.emissive = vis.base_emissive;
+            continue;
+        }
+
+        // Sample the relevant damage value (0..1) from this part's source.
+        let t = damage_value(&core, vis.source);
+
+        let (r, g, b) = jet_colormap(t);
+        // Preserve the source's original alpha (e.g. translucent block slices)
+        // so we don't accidentally make see-through parts opaque.
+        let alpha = match vis.base_color {
+            Color::Srgba(c) => c.alpha,
+            _ => 1.0,
+        };
+        // In damage view, push opaque parts brighter so the gradient pops; keep
+        // translucent parts (block slice) more visible by raising their alpha
+        // proportionally to the damage level.
+        let a_out = (alpha + 0.55 * t).min(1.0);
+        mat.base_color = Color::srgba(r, g, b, a_out);
+        // Emissive glow scales with t so red parts visibly glow under damage view.
+        let glow = (t * 1.2).clamp(0.0, 1.5);
+        mat.emissive = LinearRgba::new(r * glow, g * glow * 0.8, b * glow * 0.4, 1.0);
+    }
+}
+
+/// Map a [`DamageSource`] into a 0..=1 scalar suitable for the colormap.
+fn damage_value(core: &EngineCore, source: DamageSource) -> f32 {
+    let mats = &core.config.materials;
+    // Common reference: ambient ~ 290 K.
+    const T_AMBIENT: f32 = 290.0;
+    let temp_norm = |t: f32, melt: f32| -> f32 {
+        let span = (melt - T_AMBIENT).max(50.0);
+        ((t - T_AMBIENT) / span).clamp(0.0, 1.0)
+    };
+
+    match source {
+        DamageSource::BlockSlice(i) => {
+            let cyl = core.cylinders.get(i).copied().unwrap_or_else(crate::engine::CylinderState::inert);
+            let thermal = temp_norm(cyl.block_temp, mats.block.melting_point);
+            cyl.wall_wear.max(thermal)
+        }
+        DamageSource::Rod(i) => {
+            let cyl = core.cylinders.get(i).copied().unwrap_or_else(crate::engine::CylinderState::inert);
+            cyl.rod_damage
+        }
+        DamageSource::Piston(i) => {
+            let cyl = core.cylinders.get(i).copied().unwrap_or_else(crate::engine::CylinderState::inert);
+            let thermal = temp_norm(cyl.piston_temp, mats.piston.melting_point);
+            (thermal * 0.85 + cyl.ring_wear * 0.4).clamp(0.0, 1.0)
+        }
+        DamageSource::PistonRing(i) => {
+            let cyl = core.cylinders.get(i).copied().unwrap_or_else(crate::engine::CylinderState::inert);
+            cyl.ring_wear
+        }
+        DamageSource::CrankPin(i) => {
+            // Crank pin heat = stress concentration mirror of attached rod's damage.
+            let cyl = core.cylinders.get(i).copied().unwrap_or_else(crate::engine::CylinderState::inert);
+            cyl.rod_damage * 0.8
+        }
+    }
+}
+
 

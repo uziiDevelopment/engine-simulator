@@ -73,11 +73,17 @@ impl OilState {
     }
 
     /// 0..=1 lubrication regime.  0 = dry boundary, 1 = full hydrodynamic film.
+    ///
+    /// As long as there's oil in the sump, a residual boundary film clings to
+    /// the surfaces — so cold cranking isn't instantly catastrophic.  Active
+    /// pump pressure interpolates from that floor up to fully hydrodynamic.
     pub fn lubrication_factor(&self, cfg: &OilConfig) -> f32 {
         if !self.has_pickup(cfg) {
             return 0.0;
         }
-        (self.pressure / cfg.hydrodynamic_pressure).clamp(0.0, 1.0)
+        let residual = 0.45;
+        let active = (self.pressure / cfg.hydrodynamic_pressure).clamp(0.0, 1.0);
+        (residual + (1.0 - residual) * active).clamp(0.0, 1.0)
     }
 
     /// Step the oil one substep.
@@ -99,17 +105,14 @@ impl OilState {
 
         // ── Pump pressure ──────────────────────────────────────────────────
         // Flow rate ∝ rpm.  Pressure ≈ flow * viscosity * lumped resistance.
-        // The resistance constant is tuned so a warm idle sits near 200 kPa
-        // and the relief opens at typical operating RPM.
+        // Tuning: ~200 kPa at warm idle (~700 rpm), pinning at relief above ~1500 rpm.
         if self.has_pickup(cfg) {
-            const PUMP_RESISTANCE: f32 = 1.6e8; // Pa·s/m³
+            const PUMP_RESISTANCE: f32 = 1.5e11; // Pa·s/m³
             let revs_per_s = omega / TAU;
             let flow = (cfg.pump_displacement * revs_per_s).max(0.0);
             let raw_pressure = flow * self.viscosity * PUMP_RESISTANCE;
-            // Smooth toward the new pressure to avoid step discontinuities at the
-            // relief and at startup.
             let target = raw_pressure.min(cfg.relief_pressure);
-            let alpha = (10.0 * dt).min(1.0);
+            let alpha = (12.0 * dt).min(1.0);
             self.pressure += (target - self.pressure) * alpha;
         } else {
             // Pickup uncovered — pressure collapses immediately.

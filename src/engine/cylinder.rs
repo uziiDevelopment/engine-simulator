@@ -92,6 +92,25 @@ impl CylinderState {
         cp_mix(self.air_frac, self.fuel_frac, self.burned_frac)
     }
 
+    /// Inert default — used by colour-sampling fallbacks for missing cylinders.
+    /// Real simulation state always uses [`CylinderState::at_rest`] /
+    /// [`CylinderState::at_rest_cfg`], which seed the gas state correctly.
+    pub fn inert() -> Self {
+        Self {
+            mass: 0.0, temperature: T_ATM,
+            air_frac: 1.0, fuel_frac: 0.0, burned_frac: 0.0,
+            burn_progress: 0.0, crank_at_spark: 0.0,
+            spark_armed: false, burning: false, fuel_to_burn: 0.0,
+            last_pressure: P_ATM, last_volume: 1e-4, flash: 0.0,
+            intake_lift: 0.0, exhaust_lift: 0.0,
+            last_intake_flow: 0.0, last_exhaust_flow: 0.0,
+            wall_wear: 0.0, ring_wear: 0.0, rod_damage: 0.0,
+            block_temp: T_ATM, piston_temp: T_ATM,
+            last_friction_heat: 0.0, last_friction_torque: 0.0,
+            last_rod_stress: 0.0,
+        }
+    }
+
     /// Initial state for a cylinder at crank angle 0, full of fresh air.
     pub fn at_rest(cyl_idx: usize) -> Self {
         let v0 = cyl_volume(0.0, cyl_idx);
@@ -623,7 +642,9 @@ pub fn apply_mechanical_step_cfg(
     let piston_accel = omega * omega * crank_r * crank_local.cos();
     let force_axial_inertia = (piston_mass * piston_accel).abs();
     let force_axial = force_axial_gas + force_axial_inertia;
-    let ring_tension: f32 = 250.0;
+    // Ring spring pre-load — dominates side thrust at low gas pressure.
+    // Kept modest so a healthy lubricated engine sees just a few Nm of drag.
+    let ring_tension: f32 = 60.0;
     let normal_force = ring_tension + force_axial * tan_rod;
 
     // ── Ring vs wall contact ────────────────────────────────────────────────
@@ -634,7 +655,10 @@ pub fn apply_mechanical_step_cfg(
     let friction_torque = (friction_force * dy_dtheta.abs()).max(0.0);
 
     // ── Wear accumulation (Archard volume → 0..1 fraction) ──────────────────
-    const WEAR_NORM: f32 = 1.0e9;
+    // WEAR_NORM converts m³ of removed material into a 0..1 service-life
+    // fraction.  Tuned so ~tens of seconds of fully-dry abuse (oil drained or
+    // very mismatched materials at scale=1000) takes a part to red.
+    const WEAR_NORM: f32 = 1.0e7;
     let scale = wear_time_scale.max(0.0);
     cyl.ring_wear = (cyl.ring_wear + wear_ring_v * WEAR_NORM * scale).clamp(0.0, 1.0);
     cyl.wall_wear = (cyl.wall_wear + wear_wall_v * WEAR_NORM * scale).clamp(0.0, 1.0);
