@@ -4,8 +4,8 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 use crate::engine::{
-    EngineCore, RunState, BORE, CRANK_RADIUS, FUELS, NUM_CYL, P_ATM, REDLINE_RPM, ROD_LENGTH,
-    TOTAL_DISPLACEMENT, fuel_count,
+    EngineCore, RunState, ENGINES, FUELS, P_ATM,
+    engine_count, fuel_count,
 };
 
 pub struct UiPlugin;
@@ -53,16 +53,35 @@ fn ui_panel(mut ctx: EguiContexts, mut core: ResMut<EngineCore>) {
                 ui.label(egui::RichText::new(format!("{:>5.0}", rpm))
                     .monospace().size(18.0).color(state_color));
             });
-            rpm_bar(ui, rpm);
+            rpm_bar(ui, rpm, core.config.redline_rpm);
 
             ui.add_space(8.0);
+            ui.separator();
+
+            // ── Engine selector ─────────────────────────────────────────
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Engine").strong());
+            let mut eng_idx = core.config_idx;
+            egui::ComboBox::from_id_salt("engine_combo")
+                .width(ui.available_width() - 8.0)
+                .selected_text(ENGINES[eng_idx].name)
+                .show_ui(ui, |ui| {
+                    for i in 0..engine_count() {
+                        ui.selectable_value(&mut eng_idx, i, ENGINES[i].name);
+                    }
+                });
+            if eng_idx != core.config_idx {
+                core.select_engine(eng_idx);
+            }
+
+            ui.add_space(4.0);
             ui.separator();
 
             // ── Fuel selector ────────────────────────────────────────────
             ui.add_space(4.0);
             ui.label(egui::RichText::new("Fuel").strong());
             let mut idx = core.fuel_idx;
-            egui::ComboBox::from_id_source("fuel_combo")
+            egui::ComboBox::from_id_salt("fuel_combo")
                 .width(ui.available_width() - 8.0)
                 .selected_text(FUELS[idx].name)
                 .show_ui(ui, |ui| {
@@ -129,12 +148,16 @@ fn ui_panel(mut ctx: EguiContexts, mut core: ResMut<EngineCore>) {
             ui.separator();
             ui.add_space(4.0);
             ui.label(egui::RichText::new(format!(
-                "I4  {:.1}L  bore {:.0}mm  stroke {:.0}mm",
-                TOTAL_DISPLACEMENT * 1000.0, BORE * 1000.0, CRANK_RADIUS * 2000.0,
+                "{:.1}L  bore {:.0}mm  stroke {:.0}mm",
+                core.config.total_displacement() * 1000.0,
+                core.config.bore * 1000.0,
+                core.config.stroke * 1000.0,
             )).small());
             ui.label(egui::RichText::new(format!(
-                "rod {:.0}mm  1-3-4-2  redline {:.0}",
-                ROD_LENGTH * 1000.0, REDLINE_RPM,
+                "rod {:.0}mm  {} cyl  redline {:.0}",
+                core.config.rod_length * 1000.0,
+                core.config.num_cylinders,
+                core.config.redline_rpm,
             )).small());
         });
 
@@ -161,7 +184,7 @@ fn ui_panel(mut ctx: EguiContexts, mut core: ResMut<EngineCore>) {
             // ── Per-cylinder pressure mini-bars ──────────────────────────
             ui.label(egui::RichText::new("Cylinder Pressure").strong());
             ui.add_space(2.0);
-            for i in 0..NUM_CYL {
+            for i in 0..core.num_cyl() {
                 let cyl = &core.cylinders[i];
                 let pr = cyl.last_pressure / P_ATM;
                 ui.horizontal(|ui| {
@@ -174,15 +197,15 @@ fn ui_panel(mut ctx: EguiContexts, mut core: ResMut<EngineCore>) {
 }
 
 // ──────────────────────────────── Widgets ───────────────────────────────────
-fn rpm_bar(ui: &mut egui::Ui, rpm: f32) {
-    let bar_max = 9000.0;
+fn rpm_bar(ui: &mut egui::Ui, rpm: f32, redline: f32) {
+    let bar_max = (redline * 1.15).max(1000.0);
     let frac = (rpm / bar_max).clamp(0.0, 1.0);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 14.0), egui::Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, 3.0, egui::Color32::from_gray(40));
-    let bar_color = if rpm > REDLINE_RPM {
+    let bar_color = if rpm > redline {
         egui::Color32::from_rgb(230, 70, 70)
-    } else if rpm > REDLINE_RPM - 1500.0 {
+    } else if rpm > redline - 1500.0 {
         egui::Color32::from_rgb(230, 180, 70)
     } else {
         egui::Color32::from_rgb(80, 180, 220)
@@ -190,7 +213,7 @@ fn rpm_bar(ui: &mut egui::Ui, rpm: f32) {
     let mut filled = rect;
     filled.set_width(rect.width() * frac);
     painter.rect_filled(filled, 3.0, bar_color);
-    let redline_x = rect.left() + rect.width() * (REDLINE_RPM / bar_max);
+    let redline_x = rect.left() + rect.width() * (redline / bar_max);
     painter.line_segment(
         [egui::pos2(redline_x, rect.top()), egui::pos2(redline_x, rect.bottom())],
         egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 80, 80)),

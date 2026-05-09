@@ -16,6 +16,7 @@
 
 use std::f32::consts::PI;
 
+use super::config::EngineConfig;
 use super::geometry::FIRING_OFFSETS_DEG;
 
 // ── Cam timing (deg, in cylinder-local 4-stroke phase) ──────────────────────
@@ -28,11 +29,11 @@ pub const PEAK_LIFT:      f32 = 0.010;       // 10 mm
 pub const VALVE_DIAMETER: f32 = 0.034;       // 34 mm head
 
 /// Sinusoidal lift profile centred between `open` and `close`.
-fn lift_profile(open: f32, close: f32, phase_deg: f32) -> f32 {
+fn lift_profile(open: f32, close: f32, peak_lift: f32, phase_deg: f32) -> f32 {
     if open >= close { return 0.0; }
     if phase_deg < open || phase_deg > close { return 0.0; }
     let x = (phase_deg - open) / (close - open);
-    (x * PI).sin() * PEAK_LIFT
+    (x * PI).sin() * peak_lift
 }
 
 /// Cylinder-local 4-stroke phase in degrees, given the global crank phase.
@@ -41,12 +42,30 @@ fn cyl_phase_deg(cyl_idx: usize, fourstroke_angle: f32) -> f32 {
     (fourstroke_angle.to_degrees() - FIRING_OFFSETS_DEG[cyl_idx]).rem_euclid(720.0)
 }
 
+/// Cylinder-local 4-stroke phase in degrees, config-aware.
+#[inline]
+fn cyl_phase_deg_cfg(cfg: &EngineConfig, cyl_idx: usize, fourstroke_angle: f32) -> f32 {
+    (fourstroke_angle.to_degrees() - cfg.firing_offsets_deg[cyl_idx]).rem_euclid(720.0)
+}
+
 pub fn intake_lift_for_cyl(cyl_idx: usize, fourstroke_angle: f32) -> f32 {
-    lift_profile(INTAKE_OPEN_DEG, INTAKE_CLOSE_DEG, cyl_phase_deg(cyl_idx, fourstroke_angle))
+    lift_profile(INTAKE_OPEN_DEG, INTAKE_CLOSE_DEG, PEAK_LIFT, cyl_phase_deg(cyl_idx, fourstroke_angle))
 }
 
 pub fn exhaust_lift_for_cyl(cyl_idx: usize, fourstroke_angle: f32) -> f32 {
-    lift_profile(EXHAUST_OPEN_DEG, EXHAUST_CLOSE_DEG, cyl_phase_deg(cyl_idx, fourstroke_angle))
+    lift_profile(EXHAUST_OPEN_DEG, EXHAUST_CLOSE_DEG, PEAK_LIFT, cyl_phase_deg(cyl_idx, fourstroke_angle))
+}
+
+/// Config-aware intake lift.
+pub fn intake_lift_for_cyl_cfg(cfg: &EngineConfig, cyl_idx: usize, fourstroke_angle: f32) -> f32 {
+    lift_profile(cfg.intake_open_deg, cfg.intake_close_deg, cfg.intake_peak_lift,
+        cyl_phase_deg_cfg(cfg, cyl_idx, fourstroke_angle))
+}
+
+/// Config-aware exhaust lift.
+pub fn exhaust_lift_for_cyl_cfg(cfg: &EngineConfig, cyl_idx: usize, fourstroke_angle: f32) -> f32 {
+    lift_profile(cfg.exhaust_open_deg, cfg.exhaust_close_deg, cfg.exhaust_peak_lift,
+        cyl_phase_deg_cfg(cfg, cyl_idx, fourstroke_angle))
 }
 
 /// Effective discharge area (Cd · A) of a poppet valve at the given lift.
@@ -58,5 +77,14 @@ pub fn valve_area(lift: f32) -> f32 {
     let cd = 0.7;
     let curtain = PI * VALVE_DIAMETER * lift;
     let seat    = PI * VALVE_DIAMETER * VALVE_DIAMETER * 0.25;
+    cd * curtain.min(seat)
+}
+
+/// Config-aware valve area using a specified valve diameter.
+pub fn valve_area_cfg(lift: f32, diameter: f32) -> f32 {
+    if lift <= 0.0 { return 0.0; }
+    let cd = 0.7;
+    let curtain = PI * diameter * lift;
+    let seat    = PI * diameter * diameter * 0.25;
     cd * curtain.min(seat)
 }

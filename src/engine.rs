@@ -36,6 +36,7 @@
 //! | `crank`      | rotational dynamics (friction, starter, redline)        |
 //! | `state`      | the [`EngineCore`] resource glueing everything together |
 
+pub mod config;
 mod crank;
 mod cylinder;
 mod fuel;
@@ -45,6 +46,7 @@ mod state;
 mod thermo;
 mod valve;
 
+pub use config::*;
 pub use crank::*;
 pub use cylinder::*;
 pub use fuel::*;
@@ -62,7 +64,7 @@ pub struct EnginePlugin;
 
 impl Plugin for EnginePlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(EngineCore::new(0))
+        app.insert_resource(EngineCore::new(0, 0))
             .add_systems(Update, (engine_input, engine_step).chain());
     }
 }
@@ -100,7 +102,7 @@ pub fn engine_step(time: Res<Time>, mut core: ResMut<EngineCore>) {
                 }
             }
             RunState::Cranking => {
-                if rpm >= STARTER_DISENGAGE_RPM {
+                if rpm >= core.config.starter_disengage_rpm {
                     core.run_state = RunState::Running;
                 } else if !core.starter_active && rpm < 30.0 {
                     core.run_state = RunState::Off;
@@ -108,7 +110,7 @@ pub fn engine_step(time: Res<Time>, mut core: ResMut<EngineCore>) {
                 }
             }
             RunState::Running => {
-                if rpm < STALL_RPM {
+                if rpm < core.config.stall_rpm {
                     core.run_state = RunState::Off;
                     core.omega = 0.0;
                 }
@@ -122,12 +124,8 @@ pub fn engine_step(time: Res<Time>, mut core: ResMut<EngineCore>) {
         };
 
         // ── Plumbing: throttle plate + tailpipe ──────────────────────────
-        let throttle_eff = match core.run_state {
-            RunState::Cranking => 0.10,
-            _ => (0.015 + 0.985 * core.throttle).clamp(0.0, 1.0),
-        };
-        manifold::throttle_flow(&mut core.intake, throttle_eff, dt);
-        manifold::exhaust_to_atmosphere(&mut core.exhaust, dt);
+        let cranking = core.run_state == RunState::Cranking;
+        let throttle_eff = core.config.effective_throttle(core.throttle, cranking);
 
         // ── Step every cylinder ──────────────────────────────────────────
         let angle_old = core.angle;
@@ -137,9 +135,15 @@ pub fn engine_step(time: Res<Time>, mut core: ResMut<EngineCore>) {
         let fourstroke_new = fourstroke_old + omega * dt;
 
         let mut total_torque_from_gas = 0.0_f32;
-        let EngineCore { ref fuel, ref mut cylinders, ref mut intake, ref mut exhaust, .. } = *core;
-        for i in 0..NUM_CYL {
-            let (tau, fuel_burned) = cylinder::step_cylinder(
+        let num_cyl = core.config.num_cylinders;
+        let EngineCore { ref config, ref fuel, ref mut cylinders, ref mut intake, ref mut exhaust, .. } = *core;
+
+        manifold::throttle_flow_cfg(config, intake, throttle_eff, dt);
+        manifold::exhaust_to_atmosphere_cfg(config, exhaust, dt);
+
+        for i in 0..num_cyl {
+            let (tau, fuel_burned) = cylinder::step_cylinder_cfg(
+                config,
                 &mut cylinders[i],
                 intake,
                 exhaust,
@@ -158,15 +162,15 @@ pub fn engine_step(time: Res<Time>, mut core: ResMut<EngineCore>) {
 
         // ── Friction + starter + soft rev-limit ──────────────────────────
         let mut tau_total = total_torque_from_gas;
-        tau_total -= friction_torque(core.omega);
-        tau_total += starter_torque(rpm, core.starter_active);
+        tau_total -= core.config.friction_torque(core.omega);
+        tau_total += core.config.starter_torque_at(rpm, core.starter_active);
 
-        if rpm > REDLINE_RPM {
-            tau_total -= ((rpm - REDLINE_RPM) / 200.0).min(2.0) * 60.0;
+        if rpm > core.config.redline_rpm {
+            tau_total -= ((rpm - core.config.redline_rpm) / 200.0).min(2.0) * 60.0;
         }
 
         // ── Integrate the only true degree of freedom: the crank ─────────
-        core.omega += tau_total / FLYWHEEL_INERTIA * dt;
+        core.omega += tau_total / core.config.flywheel_inertia * dt;
         if core.omega < 0.0 {
             core.omega = 0.0;
         }

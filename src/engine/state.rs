@@ -7,11 +7,11 @@
 use bevy::prelude::*;
 use std::f32::consts::TAU;
 
+use super::config::{EngineConfig, ENGINES};
 use super::cylinder::CylinderState;
 use super::fuel::{Fuel, FUELS};
-use super::geometry::{CRANK_PHASES, NUM_CYL};
-use super::manifold::{make_exhaust_manifold, make_intake_manifold, Manifold};
-use super::thermo::P_ATM;
+use super::manifold::Manifold;
+use super::thermo::{P_ATM, R_AIR, T_ATM, T_EXH_AMBIENT};
 
 /// High-level engine run state.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -26,6 +26,12 @@ pub enum RunState {
 
 #[derive(Resource)]
 pub struct EngineCore {
+    // ── Active engine configuration ──────────────────────────────────────────
+    pub config: EngineConfig,
+    pub config_idx: usize,
+    /// Incremented every time the config changes (used by visuals for rebuild).
+    pub config_generation: u64,
+
     // Crank (the sole rotational DOF)
     pub angle:            f32,    // 0..2π
     pub fourstroke_angle: f32,    // 0..4π
@@ -39,8 +45,8 @@ pub struct EngineCore {
     pub fuel:           Fuel,
     pub fuel_idx:       usize,
 
-    // Sub-models
-    pub cylinders: [CylinderState; NUM_CYL],
+    // Sub-models (Vec allows variable cylinder counts)
+    pub cylinders: Vec<CylinderState>,
     pub intake:    Manifold,
     pub exhaust:   Manifold,
 
@@ -56,11 +62,34 @@ pub struct EngineCore {
 }
 
 impl EngineCore {
-    pub fn new(fuel_idx: usize) -> Self {
-        let cylinders: [CylinderState; NUM_CYL] =
-            std::array::from_fn(|i| CylinderState::at_rest(CRANK_PHASES[i]));
+    pub fn new(engine_idx: usize, fuel_idx: usize) -> Self {
+        let engine_idx = engine_idx.min(ENGINES.len() - 1);
+        let config = ENGINES[engine_idx].clone();
+        let num_cyl = config.num_cylinders;
+
+        let cylinders: Vec<CylinderState> = (0..num_cyl)
+            .map(|i| CylinderState::at_rest(config.crank_phases[i]))
+            .collect();
+
+        let intake = Manifold {
+            volume: config.intake_volume,
+            mass: P_ATM * config.intake_volume / (R_AIR * T_ATM),
+            temperature: T_ATM,
+            flow_signal: 0.0,
+            label: "intake",
+        };
+        let exhaust = Manifold {
+            volume: config.exhaust_volume,
+            mass: P_ATM * config.exhaust_volume / (R_AIR * T_EXH_AMBIENT),
+            temperature: T_EXH_AMBIENT,
+            flow_signal: 0.0,
+            label: "exhaust",
+        };
 
         Self {
+            config,
+            config_idx: engine_idx,
+            config_generation: 0,
             angle: 0.0,
             fourstroke_angle: 0.0,
             omega: 0.0,
@@ -68,11 +97,11 @@ impl EngineCore {
             starter_active: false,
             throttle: 0.0,
             time_scale: 1.0,
-            fuel: FUELS[fuel_idx],
+            fuel: FUELS[fuel_idx.min(FUELS.len() - 1)],
             fuel_idx,
             cylinders,
-            intake: make_intake_manifold(),
-            exhaust: make_exhaust_manifold(),
+            intake,
+            exhaust,
 
             torque_smoothed: 0.0,
             power_smoothed: 0.0,
@@ -88,10 +117,66 @@ impl EngineCore {
     #[inline]
     pub fn rpm(&self) -> f32 { self.omega.abs() * 60.0 / TAU }
 
-    /// Switch fuel index, returning the new fuel name.
+    #[inline]
+    pub fn num_cyl(&self) -> usize { self.config.num_cylinders }
+
+    /// Switch fuel index.
     pub fn select_fuel(&mut self, idx: usize) {
         let idx = idx.min(FUELS.len() - 1);
         self.fuel = FUELS[idx];
         self.fuel_idx = idx;
+    }
+
+    /// Switch engine configuration by preset index — resets all simulation state.
+    pub fn select_engine(&mut self, idx: usize) {
+        let idx = idx.min(ENGINES.len() - 1);
+        if idx == self.config_idx { return; }
+        let config = ENGINES[idx].clone();
+        self.apply_config(config, idx);
+    }
+
+    /// Load an arbitrary EngineConfig (e.g. dynamically built).  Resets simulation.
+    pub fn set_config(&mut self, config: EngineConfig) {
+        self.apply_config(config, usize::MAX);
+    }
+
+    fn apply_config(&mut self, config: EngineConfig, idx: usize) {
+        let num_cyl = config.num_cylinders;
+
+        self.cylinders = (0..num_cyl)
+            .map(|i| CylinderState::at_rest(config.crank_phases[i]))
+            .collect();
+
+        self.intake = Manifold {
+            volume: config.intake_volume,
+            mass: P_ATM * config.intake_volume / (R_AIR * T_ATM),
+            temperature: T_ATM,
+            flow_signal: 0.0,
+            label: "intake",
+        };
+        self.exhaust = Manifold {
+            volume: config.exhaust_volume,
+            mass: P_ATM * config.exhaust_volume / (R_AIR * T_EXH_AMBIENT),
+            temperature: T_EXH_AMBIENT,
+            flow_signal: 0.0,
+            label: "exhaust",
+        };
+
+        self.config = config;
+        self.config_idx = idx;
+        self.config_generation += 1;
+        self.angle = 0.0;
+        self.fourstroke_angle = 0.0;
+        self.omega = 0.0;
+        self.run_state = RunState::Off;
+        self.starter_active = false;
+        self.torque_smoothed = 0.0;
+        self.power_smoothed = 0.0;
+        self.map_smoothed = P_ATM;
+        self.afr_smoothed = 0.0;
+        self.exhaust_pressure_smoothed = P_ATM;
+        self.exhaust_temp_smoothed = 600.0;
+        self.last_frame_fuel_kg = 0.0;
+        self.last_frame_work_j = 0.0;
     }
 }
