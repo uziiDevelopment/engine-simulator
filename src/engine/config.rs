@@ -180,7 +180,7 @@ impl EngineConfig {
     #[inline]
     pub fn cyl_visual_x(&self, i: usize) -> f32 {
         match self.layout {
-            EngineLayout::Inline => {
+            EngineLayout::Inline | EngineLayout::Flat => {
                 let center = (self.num_cylinders as f32 - 1.0) * 0.5;
                 (i as f32 - center) * self.cylinder_spacing * VIS_SCALE
             }
@@ -188,17 +188,6 @@ impl EngineConfig {
                 let positions = self.crank_positions();
                 let center = (positions as f32 - 1.0) * 0.5;
                 ((i / 2) as f32 - center) * self.cylinder_spacing * VIS_SCALE
-            }
-            EngineLayout::Flat => {
-                let pairs = self.num_cylinders / 2;
-                let center_pair = (pairs as f32 - 1.0) * 0.5;
-                let pair_idx = i / 2;
-                let is_odd = (i % 2) as f32;
-                // Base position of the pair
-                let base_x = (pair_idx as f32 - center_pair) * self.cylinder_spacing;
-                // Small stagger: even cylinders shifted slightly left, odd slightly right
-                let stagger = (is_odd - 0.5) * 0.35 * self.cylinder_spacing; 
-                (base_x + stagger) * VIS_SCALE
             }
         }
     }

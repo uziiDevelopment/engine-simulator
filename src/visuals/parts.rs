@@ -130,9 +130,8 @@ pub fn spawn_engine_visuals(
     // Main bearing journals
     // For Inline/Flat, length is related to number of cylinders or pairs.
     let journal_count = match cfg.layout {
-        crate::engine::EngineLayout::Inline => num_cyl + 1,
+        crate::engine::EngineLayout::Inline | crate::engine::EngineLayout::Flat => num_cyl + 1,
         crate::engine::EngineLayout::V => (num_cyl / 2) + 1,
-        crate::engine::EngineLayout::Flat => (num_cyl / 2) + 1,
     };
     for i in 0..journal_count {
         let x = (i as f32 - (journal_count as f32 - 1.0) * 0.5) * cyl_spacing * s;
