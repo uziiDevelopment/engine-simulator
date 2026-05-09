@@ -9,6 +9,28 @@
 
 use std::f32::consts::PI;
 use std::sync::LazyLock;
+use super::material::{Material, CAST_IRON, ALUMINUM_ALLOY, STOCK_STEEL, FORGED_STEEL};
+
+#[derive(Clone, Debug)]
+pub struct MaterialsConfig {
+    pub block: Material,
+    pub cylinder_wall: Material,
+    pub piston: Material,
+    pub piston_ring: Material,
+    pub conrod: Material,
+}
+
+impl Default for MaterialsConfig {
+    fn default() -> Self {
+        Self {
+            block: CAST_IRON,
+            cylinder_wall: CAST_IRON,
+            piston: ALUMINUM_ALLOY,
+            piston_ring: STOCK_STEEL,
+            conrod: FORGED_STEEL,
+        }
+    }
+}
 
 // ── Maximum supported cylinder count ─────────────────────────────────────────
 pub const MAX_CYL: usize = 1000;
@@ -84,6 +106,9 @@ pub struct EngineConfig {
 
     // ── Visual layout ────────────────────────────────────────────────────────
     pub cylinder_spacing: f32,      // m between cylinder centres (for 3D)
+
+    // ── Materials ────────────────────────────────────────────────────────────
+    pub materials: MaterialsConfig,
 }
 
 // ─────────────────────────── Derived helpers ─────────────────────────────────
@@ -265,6 +290,7 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
         exhaust_valve_diameter: 0.030,
 
         cylinder_spacing: 0.10,
+        materials: MaterialsConfig::default(),
     },
 
     // ── 5.0L V8 (like a Ford Coyote / Chevy LS) — 90° cross-plane ──────────
@@ -308,6 +334,7 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
         exhaust_valve_diameter: 0.032,
 
         cylinder_spacing: 0.11,
+        materials: MaterialsConfig::default(),
     },
 
     // ── 3.8L Flat-6 (like a Porsche 997) ────────────────────────────────────
@@ -351,6 +378,7 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
         exhaust_valve_diameter: 0.031,
 
         cylinder_spacing: 0.12,
+        materials: MaterialsConfig::default(),
     },
 ]);
 
@@ -465,5 +493,6 @@ pub fn build_engine(
         exhaust_valve_diameter: 0.030,
 
         cylinder_spacing: 0.10,
+        materials: MaterialsConfig::default(),
     }
 }

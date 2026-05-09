@@ -10,6 +10,7 @@
 
 mod animate;
 mod parts;
+mod particles;
 
 use bevy::prelude::*;
 
@@ -28,12 +29,12 @@ impl Plugin for VisualsPlugin {
                     animate::animate_rods,
                     animate::animate_valves,
                     animate::animate_cylinder_gas,
-                    animate::animate_combustion_flash,
                     animate::animate_manifolds,
                 )
                     .chain()
                     .after(crate::engine::engine_step),
-            );
+            )
+            .add_plugins(particles::ParticlesPlugin);
     }
 }
 
@@ -93,6 +94,7 @@ pub struct Valve {
     pub cyl: usize,
     pub kind: ValveKind,
     pub seat_y: f32,
+    pub z_local: f32,
     /// Bank tilt angle (rad) — 0 for inline.
     pub bank_tilt: f32,
 }
@@ -102,12 +104,6 @@ pub struct CylinderGasViz {
     pub idx: usize,
     pub bore_material: Handle<StandardMaterial>,
     pub bank_tilt: f32,
-}
-
-#[derive(Component)]
-pub struct CombustionFlash {
-    pub cyl: usize,
-    pub material: Handle<StandardMaterial>,
 }
 
 #[derive(Component, Clone, Copy)]

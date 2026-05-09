@@ -45,6 +45,7 @@ pub struct EngineCore {
     pub fuel:           Fuel,
     pub fuel_idx:       usize,
     pub audio_enabled:  bool,
+    pub particles_enabled: bool,
 
     // Sub-models (Vec allows variable cylinder counts)
     pub cylinders: Vec<CylinderState>,
@@ -101,6 +102,7 @@ impl EngineCore {
             fuel: FUELS[fuel_idx.min(FUELS.len() - 1)],
             fuel_idx,
             audio_enabled: true,
+            particles_enabled: true,
             cylinders,
             intake,
             exhaust,

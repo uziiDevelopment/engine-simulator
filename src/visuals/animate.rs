@@ -8,7 +8,7 @@ use crate::engine::{
 };
 
 use super::{
-    CombustionFlash, ConRod, Crankshaft, CylinderGasViz, ManifoldKind, ManifoldViz, Piston,
+    ConRod, Crankshaft, CylinderGasViz, ManifoldKind, ManifoldViz, Piston,
     Valve, ValveKind,
 };
 
@@ -63,9 +63,9 @@ pub fn animate_valves(core: Res<EngineCore>, mut q: Query<(&Valve, &mut Transfor
         // Valve heads pull into the cylinder (along bank axis) when they open.
         let delta = lift_m * VIS_SCALE * 1.5;
         let tilt = v.bank_tilt;
-        // Move seat_y down along the tilted axis
-        t.translation.y = (v.seat_y - delta) * tilt.cos();
-        t.translation.z = (v.seat_y - delta) * tilt.sin();
+        let x = t.translation.x;
+        // Move seat_y down along the tilted axis, preserving z_local lateral offset
+        t.translation = tilt_vec(x, v.seat_y - delta, v.z_local, tilt);
     }
 }
 
@@ -117,30 +117,6 @@ pub fn animate_cylinder_gas(
                 emissive_strength * (flame[0] * 0.6 + 0.05),
                 emissive_strength * (flame[1] * 0.5 + 0.05),
                 emissive_strength * (flame[2] * 0.4 + 0.05),
-                1.0,
-            );
-        }
-    }
-}
-
-// ──────────────── Combustion-flash sphere at top of each bore ───────────────
-pub fn animate_combustion_flash(
-    core: Res<EngineCore>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    q: Query<&CombustionFlash>,
-) {
-    for flash in &q {
-        if flash.cyl >= core.cylinders.len() { continue; }
-        let cyl = &core.cylinders[flash.cyl];
-        let intensity = cyl.flash.clamp(0.0, 1.0).powf(0.6);
-
-        if let Some(mat) = materials.get_mut(&flash.material) {
-            let flame = core.fuel.flame_color;
-            mat.base_color = Color::srgba(flame[0], flame[1], flame[2], intensity * 0.85);
-            mat.emissive = LinearRgba::new(
-                flame[0] * intensity * 6.0,
-                flame[1] * intensity * 6.0,
-                flame[2] * intensity * 6.0,
                 1.0,
             );
         }

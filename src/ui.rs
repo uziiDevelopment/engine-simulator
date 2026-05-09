@@ -7,6 +7,7 @@ use crate::engine::{
     EngineCore, RunState, ENGINES, FUELS, P_ATM,
     engine_count, fuel_count,
 };
+use crate::visuals::EngineVisual;
 
 pub struct UiPlugin;
 
@@ -16,7 +17,11 @@ impl Plugin for UiPlugin {
     }
 }
 
-fn ui_panel(mut ctx: EguiContexts, mut core: ResMut<EngineCore>) {
+fn ui_panel(
+    mut ctx: EguiContexts, 
+    mut core: ResMut<EngineCore>,
+    mut visual_query: Query<(Entity, &Name, Option<&Children>, Option<&Parent>, &mut Visibility), With<EngineVisual>>,
+) {
     let rpm = core.rpm();
     let state_text = match core.run_state {
         RunState::Off      => "OFF",
@@ -138,6 +143,7 @@ fn ui_panel(mut ctx: EguiContexts, mut core: ResMut<EngineCore>) {
 
             // ── Audio ────────────────────────────────────────────────────
             ui.checkbox(&mut core.audio_enabled, "Audio Simulation");
+            ui.checkbox(&mut core.particles_enabled, "Gas Flow Particles");
 
             ui.add_space(8.0);
             ui.separator();
@@ -166,6 +172,28 @@ fn ui_panel(mut ctx: EguiContexts, mut core: ResMut<EngineCore>) {
                 core.config.num_cylinders,
                 core.config.redline_rpm,
             )).small());
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Render Tree").strong());
+            ui.add_space(2.0);
+
+            egui::ScrollArea::vertical().id_salt("render_tree").max_height(300.0).show(ui, |ui| {
+                // Build a temporary tree to avoid borrow checker issues with recursion + &mut Query
+                let mut roots = Vec::new();
+                for (entity, _, _, parent, _) in visual_query.iter() {
+                    let is_root = parent.map_or(true, |p| !visual_query.contains(p.get()));
+                    if is_root {
+                        roots.push(entity);
+                    }
+                }
+                roots.sort_by_cached_key(|e| visual_query.get(*e).map(|(_, n, _, _, _)| n.to_string()).unwrap_or_default());
+
+                for root in roots {
+                    draw_render_tree(ui, root, &mut visual_query);
+                }
+            });
         });
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -278,4 +306,49 @@ fn pressure_minibar(ui: &mut egui::Ui, pressure_ratio: f32, temp_k: f32, flash: 
         ));
     }
     ui.label(egui::RichText::new(format!("{:>5.1} bar  {:>4.0} K", pressure_ratio, temp_k)).monospace().small());
+}
+
+fn draw_render_tree(
+    ui: &mut egui::Ui,
+    entity: Entity,
+    query: &mut Query<(Entity, &Name, Option<&Children>, Option<&Parent>, &mut Visibility), With<EngineVisual>>,
+) {
+    // 1. Collect info and current state, then drop the borrow immediately
+    let (name, is_visible, child_ids) = {
+        let Ok((_, name, children, _, vis)) = query.get_mut(entity) else { return; };
+        (
+            name.to_string(),
+            matches!(*vis, Visibility::Inherited | Visibility::Visible),
+            children.map(|c| c.iter().cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        )
+    };
+
+    let mut new_visible = is_visible;
+
+    ui.horizontal(|ui| {
+        if ui.checkbox(&mut new_visible, "").changed() {
+            if let Ok((_, _, _, _, mut vis)) = query.get_mut(entity) {
+                *vis = if new_visible { Visibility::Inherited } else { Visibility::Hidden };
+            }
+        }
+
+        if !child_ids.is_empty() {
+            let id = ui.make_persistent_id(entity);
+            let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+            
+            // We must wrap the collapsing header in a vertical layout because
+            // its body (indentation) only works in vertical layouts.
+            ui.vertical(|ui| {
+                state.show_header(ui, |ui| {
+                    ui.label(&name);
+                }).body(|ui| {
+                    for child in child_ids {
+                        draw_render_tree(ui, child, query);
+                    }
+                });
+            });
+        } else {
+            ui.label(&name);
+        }
+    });
 }

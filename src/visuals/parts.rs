@@ -7,7 +7,7 @@ use std::f32::consts::PI;
 use crate::engine::{EngineCore, VIS_SCALE};
 
 use super::{
-    CombustionFlash, ConRod, Crankshaft, CylinderGasViz, EngineVisual, ManifoldKind, ManifoldViz,
+    ConRod, Crankshaft, CylinderGasViz, EngineVisual, ManifoldKind, ManifoldViz,
     Piston, Valve, ValveKind,
 };
 
@@ -118,13 +118,12 @@ pub fn spawn_engine_visuals(
     let pulley_mesh        = meshes.add(Cylinder::new(0.060 * s, 0.025 * s));
     let valve_head_mesh    = meshes.add(Cylinder::new(0.017 * s, 0.008 * s));
     let valve_stem_mesh    = meshes.add(Cylinder::new(0.004 * s, 0.06 * s));
-    let flash_mesh         = meshes.add(Sphere::new(bore * 0.42 * s));
 
     let crank_axis_rot = Quat::from_rotation_z(PI / 2.0);
 
     // ── Crankshaft (parent; children rotate with it) ───────────────────────
     let crank_entity = commands.spawn((
-        EngineVisual, Crankshaft, SpatialBundle::default(),
+        EngineVisual, Crankshaft, SpatialBundle::default(), Name::new("Crankshaft"),
     )).id();
 
     // Main bearing journals
@@ -135,7 +134,7 @@ pub fn spawn_engine_visuals(
     };
     for i in 0..journal_count {
         let x = (i as f32 - (journal_count as f32 - 1.0) * 0.5) * cyl_spacing * s;
-        commands.spawn((EngineVisual, PbrBundle {
+        commands.spawn((EngineVisual, Name::new(format!("Main Journal {}", i + 1)), PbrBundle {
             mesh: main_journal_mesh.clone(),
             material: crank_mat.clone(),
             transform: Transform::from_xyz(x, 0.0, 0.0).with_rotation(crank_axis_rot),
@@ -158,15 +157,15 @@ pub fn spawn_engine_visuals(
         let pin_y = phi.cos() * crank_radius * s;
         let pin_z = phi.sin() * crank_radius * s;
 
-        commands.spawn((EngineVisual, PbrBundle {
+        commands.spawn((EngineVisual, Name::new(format!("Crank Pin {}", pos + 1)), PbrBundle {
             mesh: crank_pin_mesh.clone(),
             material: crank_mat.clone(),
             transform: Transform::from_xyz(x, pin_y, pin_z).with_rotation(crank_axis_rot),
             ..default()
         })).set_parent(crank_entity);
 
-        for &dx in &[-0.034 * s, 0.034 * s] {
-            commands.spawn((EngineVisual, PbrBundle {
+        for (w_idx, &dx) in [-0.034 * s, 0.034 * s].iter().enumerate() {
+            commands.spawn((EngineVisual, Name::new(format!("Counterweight {}-{}", pos + 1, w_idx + 1)), PbrBundle {
                 mesh: counterweight_mesh.clone(),
                 material: crank_mat.clone(),
                 transform: Transform::from_xyz(x + dx, pin_y * 0.5, pin_z * 0.5)
@@ -181,35 +180,33 @@ pub fn spawn_engine_visuals(
     let front_x = -half_len;
     let rear_x  =  half_len;
 
-    commands.spawn((EngineVisual, PbrBundle {
+    commands.spawn((EngineVisual, Name::new("Front Pulley"), PbrBundle {
         mesh: pulley_mesh.clone(), material: crank_mat.clone(),
         transform: Transform::from_xyz(front_x - 0.04 * s, 0.0, 0.0).with_rotation(crank_axis_rot),
         ..default()
     })).set_parent(crank_entity);
 
-    commands.spawn((EngineVisual, PbrBundle {
+    let flywheel = commands.spawn((EngineVisual, Name::new("Flywheel"), PbrBundle {
         mesh: flywheel_mesh.clone(), material: flywheel_mat.clone(),
         transform: Transform::from_xyz(rear_x + 0.04 * s, 0.0, 0.0).with_rotation(crank_axis_rot),
         ..default()
-    })).set_parent(crank_entity);
+    })).set_parent(crank_entity).id();
 
-    // Yellow timing mark on the flywheel rim
-    commands.spawn((EngineVisual, PbrBundle {
-        mesh: meshes.add(Cuboid::new(0.012 * s, 0.025 * s, 0.045 * s)),
-        material: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.95, 0.85, 0.1),
-            emissive: LinearRgba::new(0.4, 0.35, 0.0, 1.0),
-            ..default()
-        }),
-        transform: Transform::from_xyz(rear_x + 0.04 * s, 0.105 * s, 0.0),
-        ..default()
-    })).set_parent(crank_entity);
+    // Removed yellow timing mark as it looked glitchy/unintended
 
-    commands.spawn((EngineVisual, PbrBundle {
+    commands.spawn((EngineVisual, Name::new("Output Shaft"), PbrBundle {
         mesh: output_shaft_mesh.clone(), material: crank_mat.clone(),
         transform: Transform::from_xyz(rear_x + 0.10 * s, 0.0, 0.0).with_rotation(crank_axis_rot),
         ..default()
     })).set_parent(crank_entity);
+
+    // ── Group entities ───────────────────────────────────────────────────────
+    let grp_pistons = commands.spawn((EngineVisual, Name::new("Pistons"), SpatialBundle::default())).id();
+    let grp_rods = commands.spawn((EngineVisual, Name::new("Connecting Rods"), SpatialBundle::default())).id();
+    let grp_bores = commands.spawn((EngineVisual, Name::new("Cylinder Bores"), SpatialBundle::default())).id();
+    let grp_valves = commands.spawn((EngineVisual, Name::new("Valves"), SpatialBundle::default())).id();
+    let grp_heads = commands.spawn((EngineVisual, Name::new("Cylinder Heads"), SpatialBundle::default())).id();
+    let grp_manifolds = commands.spawn((EngineVisual, Name::new("Manifolds"), SpatialBundle::default())).id();
 
     // ── Per-cylinder visuals (pistons, rods, bores, valves, flash) ─────────
     for i in 0..num_cyl {
@@ -223,6 +220,7 @@ pub fn spawn_engine_visuals(
         // ── Piston ─────────────────────────────────────────────────────────
         commands.spawn((
             EngineVisual,
+            Name::new(format!("Piston {}", i + 1)),
             Piston { idx: i, bank_tilt: tilt },
             PbrBundle {
                 mesh: piston_mesh.clone(),
@@ -231,11 +229,12 @@ pub fn spawn_engine_visuals(
                     .with_rotation(Quat::from_rotation_x(tilt)),
                 ..default()
             },
-        ));
+        )).set_parent(grp_pistons);
 
         // ── Connecting rod ─────────────────────────────────────────────────
         commands.spawn((
             EngineVisual,
+            Name::new(format!("Connecting Rod {}", i + 1)),
             ConRod { idx: i, base_x: x, bank_tilt: tilt },
             PbrBundle {
                 mesh: rod_mesh.clone(),
@@ -243,7 +242,7 @@ pub fn spawn_engine_visuals(
                 transform: Transform::from_translation(pos * 0.5),
                 ..default()
             },
-        ));
+        )).set_parent(grp_rods);
 
         // ── Translucent cylinder bore ──────────────────────────────────────
         let bore_y = rod_length * s + 0.04 * s;
@@ -262,6 +261,7 @@ pub fn spawn_engine_visuals(
 
         commands.spawn((
             EngineVisual,
+            Name::new(format!("Bore {}", i + 1)),
             CylinderGasViz { idx: i, bore_material: bore_mat_handle.clone(), bank_tilt: tilt },
             PbrBundle {
                 mesh: bore_mesh.clone(),
@@ -270,31 +270,9 @@ pub fn spawn_engine_visuals(
                     .with_rotation(Quat::from_rotation_x(tilt)),
                 ..default()
             },
-        ));
+        )).set_parent(grp_bores);
 
-        // ── Combustion flash sphere ────────────────────────────────────────
-        let flash_y = rod_length * s + 0.115 * s;
-        let flash_pos = tilt_position(x, flash_y, 0.0, tilt);
-
-        let flash_mat = materials.add(StandardMaterial {
-            base_color: Color::srgba(1.0, 0.5, 0.2, 0.0),
-            emissive: LinearRgba::new(0.0, 0.0, 0.0, 1.0),
-            alpha_mode: AlphaMode::Blend,
-            unlit: true,
-            cull_mode: None,
-            ..default()
-        });
-
-        commands.spawn((
-            EngineVisual,
-            CombustionFlash { cyl: i, material: flash_mat.clone() },
-            PbrBundle {
-                mesh: flash_mesh.clone(),
-                material: flash_mat,
-                transform: Transform::from_translation(flash_pos),
-                ..default()
-            },
-        ));
+        // (Combustion flash sphere replaced by particle bursts — see particles.rs)
 
         // ── Valves: intake (−Z side) and exhaust (+Z side) relative to bank ─
         let valve_seat_y = rod_length * s + 0.13 * s;
@@ -302,19 +280,24 @@ pub fn spawn_engine_visuals(
             let stem_pos = tilt_position(x, valve_seat_y + 0.045 * s, z_local, tilt);
             let head_pos = tilt_position(x, valve_seat_y, z_local, tilt);
 
+            let kind_name = match kind {
+                ValveKind::Intake => "Intake",
+                ValveKind::Exhaust => "Exhaust",
+            };
+
             // Valve stem (static)
-            commands.spawn((EngineVisual, PbrBundle {
+            commands.spawn((EngineVisual, Name::new(format!("{} Stem {}", kind_name, i + 1)), PbrBundle {
                 mesh: valve_stem_mesh.clone(),
                 material: valve_mat.clone(),
                 transform: Transform::from_translation(stem_pos)
                     .with_rotation(Quat::from_rotation_x(tilt)),
                 ..default()
-            }));
+            })).set_parent(grp_valves);
 
-            // Valve head (animated)
             commands.spawn((
                 EngineVisual,
-                Valve { cyl: i, kind, seat_y: valve_seat_y, bank_tilt: tilt },
+                Name::new(format!("{} Head {}", kind_name, i + 1)),
+                Valve { cyl: i, kind, seat_y: valve_seat_y, z_local, bank_tilt: tilt },
                 PbrBundle {
                     mesh: valve_head_mesh.clone(),
                     material: valve_mat.clone(),
@@ -322,7 +305,7 @@ pub fn spawn_engine_visuals(
                         .with_rotation(Quat::from_rotation_x(tilt)),
                     ..default()
                 },
-            ));
+            )).set_parent(grp_valves);
         }
     }
 
@@ -334,12 +317,12 @@ pub fn spawn_engine_visuals(
     match cfg.layout {
         crate::engine::EngineLayout::Inline => {
             let head_mesh = meshes.add(Cuboid::new(head_width, 0.05 * s, 0.16 * s));
-            commands.spawn((EngineVisual, PbrBundle {
+            commands.spawn((EngineVisual, Name::new("Inline Head"), PbrBundle {
                 mesh: head_mesh,
                 material: head_mat.clone(),
                 transform: Transform::from_xyz(0.0, head_y, 0.0),
                 ..default()
-            }));
+            })).set_parent(grp_heads);
         }
         _ => {
             // Two heads, one per bank, tilted
@@ -347,13 +330,14 @@ pub fn spawn_engine_visuals(
             for bank in 0..2 {
                 let tilt = if bank == 0 { cfg.bank_angle * 0.5 } else { -cfg.bank_angle * 0.5 };
                 let pos = tilt_position(0.0, head_y, 0.0, tilt);
-                commands.spawn((EngineVisual, PbrBundle {
+                let bank_name = if bank == 0 { "A" } else { "B" };
+                commands.spawn((EngineVisual, Name::new(format!("Bank {} Head", bank_name)), PbrBundle {
                     mesh: head_mesh.clone(),
                     material: head_mat.clone(),
                     transform: Transform::from_translation(pos)
                         .with_rotation(Quat::from_rotation_x(tilt)),
                     ..default()
-                }));
+                })).set_parent(grp_heads);
             }
         }
     }
@@ -378,6 +362,7 @@ pub fn spawn_engine_visuals(
             // Intake on −Z, exhaust on +Z
             commands.spawn((
                 EngineVisual,
+                Name::new("Intake Runner"),
                 ManifoldViz { kind: ManifoldKind::Intake, material: intake_mat.clone() },
                 PbrBundle {
                     mesh: runner_mesh.clone(), material: intake_mat,
@@ -385,9 +370,10 @@ pub fn spawn_engine_visuals(
                         .with_rotation(Quat::from_rotation_z(PI / 2.0)),
                     ..default()
                 },
-            ));
+            )).set_parent(grp_manifolds);
             commands.spawn((
                 EngineVisual,
+                Name::new("Exhaust Runner"),
                 ManifoldViz { kind: ManifoldKind::Exhaust, material: exhaust_mat.clone() },
                 PbrBundle {
                     mesh: runner_mesh, material: exhaust_mat,
@@ -395,13 +381,14 @@ pub fn spawn_engine_visuals(
                         .with_rotation(Quat::from_rotation_z(PI / 2.0)),
                     ..default()
                 },
-            ));
+            )).set_parent(grp_manifolds);
         }
         _ => {
             // V / Flat: intake in the valley (center), exhaust on outer sides
             let intake_pos = Vec3::new(0.0, head_y + 0.06 * s, 0.0);
             commands.spawn((
                 EngineVisual,
+                Name::new("Intake Runner"),
                 ManifoldViz { kind: ManifoldKind::Intake, material: intake_mat.clone() },
                 PbrBundle {
                     mesh: runner_mesh.clone(), material: intake_mat,
@@ -409,7 +396,7 @@ pub fn spawn_engine_visuals(
                         .with_rotation(Quat::from_rotation_z(PI / 2.0)),
                     ..default()
                 },
-            ));
+            )).set_parent(grp_manifolds);
             // Exhaust runners on outer side of each bank
             let exh_offset = 0.14 * s;
             let tilt_a = cfg.bank_angle * 0.5;
@@ -424,6 +411,7 @@ pub fn spawn_engine_visuals(
 
             commands.spawn((
                 EngineVisual,
+                Name::new("Bank A Exhaust Runner"),
                 ManifoldViz { kind: ManifoldKind::Exhaust, material: exhaust_mat.clone() },
                 PbrBundle {
                     mesh: runner_mesh.clone(), material: exhaust_mat,
@@ -431,9 +419,10 @@ pub fn spawn_engine_visuals(
                         .with_rotation(Quat::from_rotation_z(PI / 2.0)),
                     ..default()
                 },
-            ));
+            )).set_parent(grp_manifolds);
             commands.spawn((
                 EngineVisual,
+                Name::new("Bank B Exhaust Runner"),
                 ManifoldViz { kind: ManifoldKind::Exhaust, material: exhaust_mat_b.clone() },
                 PbrBundle {
                     mesh: runner_mesh, material: exhaust_mat_b,
@@ -441,7 +430,7 @@ pub fn spawn_engine_visuals(
                         .with_rotation(Quat::from_rotation_z(PI / 2.0)),
                     ..default()
                 },
-            ));
+            )).set_parent(grp_manifolds);
         }
     }
 
@@ -452,13 +441,14 @@ pub fn spawn_engine_visuals(
         let tilt = cfg.cyl_bank_tilt(i);
         for z_local in [-0.10 * s, 0.10 * s] {
             let pos = tilt_position(x, head_y + 0.04 * s, z_local, tilt);
-            commands.spawn((EngineVisual, PbrBundle {
+            let side = if z_local < 0.0 { "Intake" } else { "Exhaust" };
+            commands.spawn((EngineVisual, Name::new(format!("Cyl {} {} Port", i + 1, side)), PbrBundle {
                 mesh: port_mesh.clone(),
                 material: head_mat.clone(),
                 transform: Transform::from_translation(pos)
                     .with_rotation(Quat::from_rotation_x(tilt)),
                 ..default()
-            }));
+            })).set_parent(grp_manifolds);
         }
     }
 }
