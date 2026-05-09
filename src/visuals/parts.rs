@@ -209,7 +209,7 @@ pub fn spawn_engine_visuals(
         let x = cfg.cyl_visual_x(i);
         let tilt = cfg.cyl_bank_tilt(i);
         // Initial piston Y position (at rest, theta=0)
-        let y_p = cfg.piston_y(0.0, cfg.crank_phases[i]) * s;
+        let y_p = cfg.piston_y(0.0, i) * s;
         // Tilted position: piston moves along the bank axis
         let pos = tilt_position(x, y_p, 0.0, tilt);
 

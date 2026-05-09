@@ -73,8 +73,32 @@ impl CylinderState {
     }
 
     /// Initial state for a cylinder at crank angle 0, full of fresh air.
-    pub fn at_rest(phase: f32) -> Self {
-        let v0 = cyl_volume(0.0, phase);
+    pub fn at_rest(cyl_idx: usize) -> Self {
+        let v0 = cyl_volume(0.0, cyl_idx);
+        Self {
+            mass: P_ATM * v0 / (R_AIR * T_ATM),
+            temperature: T_ATM,
+            air_frac: 1.0,
+            fuel_frac: 0.0,
+            burned_frac: 0.0,
+            burn_progress: 0.0,
+            crank_at_spark: 0.0,
+            spark_armed: false,
+            burning: false,
+            fuel_to_burn: 0.0,
+            last_pressure: P_ATM,
+            last_volume: v0,
+            flash: 0.0,
+            intake_lift: 0.0,
+            exhaust_lift: 0.0,
+            last_intake_flow: 0.0,
+            last_exhaust_flow: 0.0,
+        }
+    }
+
+    /// Config-aware initial state for a cylinder at crank angle 0.
+    pub fn at_rest_cfg(cfg: &EngineConfig, cyl_idx: usize) -> Self {
+        let v0 = cfg.cyl_volume(0.0, cyl_idx);
         Self {
             mass: P_ATM * v0 / (R_AIR * T_ATM),
             temperature: T_ATM,
@@ -112,11 +136,9 @@ pub fn step_cylinder(
     dt: f32,
     combustion_enabled: bool,
 ) -> (f32, f32) {
-    let phase = CRANK_PHASES[cyl_idx];
-
     // ── Volume + valve geometry ────────────────────────────────────────────
-    let v_old = cyl_volume(angle_old, phase);
-    let v_new = cyl_volume(angle_new, phase);
+    let v_old = cyl_volume(angle_old, cyl_idx);
+    let v_new = cyl_volume(angle_new, cyl_idx);
     let dv = v_new - v_old;
 
     cyl.intake_lift  = intake_lift_for_cyl(cyl_idx, fourstroke_new);
@@ -213,7 +235,7 @@ pub fn step_cylinder(
     // pressure; we just scale with surface area, ΔT and fix a coefficient.
     let wall_temp = 410.0; // K (hot block)
     let h_w = 480.0;       // W/m²K, average
-    let surface_area = PI * BORE * (STROKE_TOP - piston_y(angle_new, phase)).max(0.0)
+    let surface_area = PI * BORE * (STROKE_TOP - piston_y(angle_new, cyl_idx)).max(0.0)
         + 2.0 * PISTON_AREA;
     let q_wall = h_w * surface_area * (cyl.temperature - wall_temp) * dt;
 
@@ -297,7 +319,7 @@ pub fn step_cylinder(
     let p_avg = 0.5 * (p_old + p_new);
     let force_axial = (p_avg - P_ATM) * PISTON_AREA;
     let theta_mid = 0.5 * (angle_old + angle_new);
-    let dy_dtheta = dpiston_dtheta(theta_mid, phase);
+    let dy_dtheta = dpiston_dtheta(theta_mid, cyl_idx);
     let torque = -force_axial * dy_dtheta;
 
     // ── Decay the combustion-flash visual ──────────────────────────────────
@@ -323,11 +345,9 @@ pub fn step_cylinder_cfg(
     dt: f32,
     combustion_enabled: bool,
 ) -> (f32, f32) {
-    let phase = cfg.crank_phases[cyl_idx];
-
     // ── Volume + valve geometry ────────────────────────────────────────────
-    let v_old = cfg.cyl_volume(angle_old, phase);
-    let v_new = cfg.cyl_volume(angle_new, phase);
+    let v_old = cfg.cyl_volume(angle_old, cyl_idx);
+    let v_new = cfg.cyl_volume(angle_new, cyl_idx);
     let dv = v_new - v_old;
 
     cyl.intake_lift  = intake_lift_for_cyl_cfg(cfg, cyl_idx, fourstroke_new);
@@ -413,7 +433,7 @@ pub fn step_cylinder_cfg(
     let h_w = 480.0;
     let bore = cfg.bore;
     let piston_area = cfg.piston_area();
-    let surface_area = PI * bore * (cfg.stroke_top() - cfg.piston_y(angle_new, phase)).max(0.0)
+    let surface_area = PI * bore * (cfg.stroke_top() - cfg.piston_y(angle_new, cyl_idx)).max(0.0)
         + 2.0 * piston_area;
     let q_wall = h_w * surface_area * (cyl.temperature - wall_temp) * dt;
 
@@ -484,7 +504,7 @@ pub fn step_cylinder_cfg(
     let p_avg = 0.5 * (p_old + p_new);
     let force_axial = (p_avg - P_ATM) * piston_area;
     let theta_mid = 0.5 * (angle_old + angle_new);
-    let dy_dtheta = cfg.dpiston_dtheta(theta_mid, phase);
+    let dy_dtheta = cfg.dpiston_dtheta(theta_mid, cyl_idx);
     let torque = -force_axial * dy_dtheta;
 
     // ── Decay the combustion-flash visual ──────────────────────────────────

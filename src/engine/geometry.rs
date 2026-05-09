@@ -44,14 +44,16 @@ pub const CYL_SPACING: f32 = 0.10;
 // live on `EngineConfig` directly (see config.rs).
 
 #[inline]
-pub fn piston_y(theta: f32, phase: f32) -> f32 {
+pub fn piston_y(theta: f32, cyl_idx: usize) -> f32 {
+    let phase = CRANK_PHASES[cyl_idx];
     let a = theta + phase;
     let s = a.sin();
     CRANK_RADIUS * a.cos() + (ROD_LENGTH * ROD_LENGTH - CRANK_RADIUS * CRANK_RADIUS * s * s).sqrt()
 }
 
 #[inline]
-pub fn dpiston_dtheta(theta: f32, phase: f32) -> f32 {
+pub fn dpiston_dtheta(theta: f32, cyl_idx: usize) -> f32 {
+    let phase = CRANK_PHASES[cyl_idx];
     let a = theta + phase;
     let s = a.sin();
     let c = a.cos();
@@ -60,24 +62,24 @@ pub fn dpiston_dtheta(theta: f32, phase: f32) -> f32 {
 }
 
 #[inline]
-pub fn cyl_volume(theta: f32, phase: f32) -> f32 {
-    let displacement_from_tdc = STROKE_TOP - piston_y(theta, phase);
+pub fn cyl_volume(theta: f32, cyl_idx: usize) -> f32 {
+    let displacement_from_tdc = STROKE_TOP - piston_y(theta, cyl_idx);
     CLEARANCE_VOL + PISTON_AREA * displacement_from_tdc
 }
 
 // ────────────────────────── Config-aware free functions ──────────────────────
 
 #[inline]
-pub fn piston_y_cfg(cfg: &EngineConfig, theta: f32, phase: f32) -> f32 {
-    cfg.piston_y(theta, phase)
+pub fn piston_y_cfg(cfg: &EngineConfig, theta: f32, cyl_idx: usize) -> f32 {
+    cfg.piston_y(theta, cyl_idx)
 }
 
 #[inline]
-pub fn dpiston_dtheta_cfg(cfg: &EngineConfig, theta: f32, phase: f32) -> f32 {
-    cfg.dpiston_dtheta(theta, phase)
+pub fn dpiston_dtheta_cfg(cfg: &EngineConfig, theta: f32, cyl_idx: usize) -> f32 {
+    cfg.dpiston_dtheta(theta, cyl_idx)
 }
 
 #[inline]
-pub fn cyl_volume_cfg(cfg: &EngineConfig, theta: f32, phase: f32) -> f32 {
-    cfg.cyl_volume(theta, phase)
+pub fn cyl_volume_cfg(cfg: &EngineConfig, theta: f32, cyl_idx: usize) -> f32 {
+    cfg.cyl_volume(theta, cyl_idx)
 }

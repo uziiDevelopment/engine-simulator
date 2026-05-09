@@ -126,9 +126,11 @@ impl EngineConfig {
 
     /// Piston position (y_p) for slider-crank.
     #[inline]
-    pub fn piston_y(&self, theta: f32, phase: f32) -> f32 {
+    pub fn piston_y(&self, theta: f32, cyl_idx: usize) -> f32 {
         let r = self.crank_radius();
         let l = self.rod_length;
+        let tilt = self.cyl_bank_tilt(cyl_idx);
+        let phase = self.crank_phases[cyl_idx] - tilt;
         let a = theta + phase;
         let s = a.sin();
         r * a.cos() + (l * l - r * r * s * s).sqrt()
@@ -136,9 +138,11 @@ impl EngineConfig {
 
     /// ∂y_p/∂θ — used for torque conversion.
     #[inline]
-    pub fn dpiston_dtheta(&self, theta: f32, phase: f32) -> f32 {
+    pub fn dpiston_dtheta(&self, theta: f32, cyl_idx: usize) -> f32 {
         let r = self.crank_radius();
         let l = self.rod_length;
+        let tilt = self.cyl_bank_tilt(cyl_idx);
+        let phase = self.crank_phases[cyl_idx] - tilt;
         let a = theta + phase;
         let s = a.sin();
         let c = a.cos();
@@ -146,10 +150,10 @@ impl EngineConfig {
         -r * s - (r * r * s * c) / denom
     }
 
-    /// In-cylinder volume at crank angle θ for a given crank phase.
+    /// In-cylinder volume at crank angle θ for a given cylinder.
     #[inline]
-    pub fn cyl_volume(&self, theta: f32, phase: f32) -> f32 {
-        let displacement_from_tdc = self.stroke_top() - self.piston_y(theta, phase);
+    pub fn cyl_volume(&self, theta: f32, cyl_idx: usize) -> f32 {
+        let displacement_from_tdc = self.stroke_top() - self.piston_y(theta, cyl_idx);
         self.clearance_vol() + self.piston_area() * displacement_from_tdc
     }
 
@@ -161,23 +165,23 @@ impl EngineConfig {
     }
 
     /// Number of crank positions along X for this layout.
-    /// Inline: num_cylinders.  V/Flat: num_cylinders / 2 (pairs share a crank pin X).
+    /// Inline and Flat: num_cylinders.  V: (num_cylinders + 1) / 2.
     #[inline]
     pub fn crank_positions(&self) -> usize {
         match self.layout {
-            EngineLayout::Inline => self.num_cylinders,
-            EngineLayout::V | EngineLayout::Flat => (self.num_cylinders + 1) / 2,
+            EngineLayout::Inline | EngineLayout::Flat => self.num_cylinders,
+            EngineLayout::V => (self.num_cylinders + 1) / 2,
         }
     }
 
     /// Visual X position along the crankshaft for a cylinder.
-    /// For V/Flat engines, paired cylinders share the same X.
+    /// For V engines, paired cylinders share the same X.
     #[inline]
     pub fn cyl_visual_x(&self, i: usize) -> f32 {
         let positions = self.crank_positions();
         let idx_along_crank = match self.layout {
-            EngineLayout::Inline => i,
-            EngineLayout::V | EngineLayout::Flat => i / 2,
+            EngineLayout::Inline | EngineLayout::Flat => i,
+            EngineLayout::V => i / 2,
         };
         let center = (positions as f32 - 1.0) * 0.5;
         (idx_along_crank as f32 - center) * self.cylinder_spacing * VIS_SCALE
@@ -268,8 +272,8 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
         stroke: 0.093,
         rod_length: 0.152,
         compression_ratio: 11.0,
-        crank_phases: vec![0.0, PI, PI, 0.0, PI * 0.5, PI * 1.5, PI * 1.5, PI * 0.5],
-        firing_offsets_deg: vec![0.0, 90.0, 270.0, 360.0, 450.0, 540.0, 630.0, 180.0],
+        crank_phases: vec![0.0, 0.0, PI * 0.5, PI * 0.5, PI * 1.5, PI * 1.5, PI, PI],
+        firing_offsets_deg: vec![45.0, 315.0, 675.0, 225.0, 135.0, 405.0, 585.0, 495.0],
 
         flywheel_inertia: 0.35,
         friction_base: 22.0,
@@ -311,8 +315,8 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
         stroke: 0.077,
         rod_length: 0.128,
         compression_ratio: 12.5,
-        crank_phases: vec![0.0, 2.0*PI/3.0, 4.0*PI/3.0, PI, PI + 2.0*PI/3.0, PI + 4.0*PI/3.0],
-        firing_offsets_deg: vec![0.0, 120.0, 240.0, 360.0, 480.0, 600.0],
+        crank_phases: vec![0.0, PI, 2.0*PI/3.0, 5.0*PI/3.0, 4.0*PI/3.0, PI/3.0],
+        firing_offsets_deg: vec![90.0, 450.0, 330.0, 690.0, 210.0, 570.0],
 
         flywheel_inertia: 0.14,
         friction_base: 16.0,
@@ -376,10 +380,9 @@ pub fn generate_v_phases(n: usize, bank_angle: f32) -> Vec<f32> {
     let mut phases = vec![0.0_f32; n];
     for pair in 0..pairs {
         let base_phase = (pair as f32 * spacing_deg % 360.0) * PI / 180.0;
-        // Bank A (even index)
+        // Bank A (even index) and Bank B (odd index) share the same physical throw phase
         phases[pair * 2] = base_phase;
-        // Bank B (odd index) offset by bank angle expressed as crank angle
-        phases[pair * 2 + 1] = base_phase + bank_angle * 0.5;
+        phases[pair * 2 + 1] = base_phase;
     }
     // Handle odd cylinder count (last one goes on bank A)
     if n % 2 == 1 {

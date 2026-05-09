@@ -68,7 +68,7 @@ impl EngineCore {
         let num_cyl = config.num_cylinders;
 
         let cylinders: Vec<CylinderState> = (0..num_cyl)
-            .map(|i| CylinderState::at_rest(config.crank_phases[i]))
+            .map(|i| CylinderState::at_rest_cfg(&config, i))
             .collect();
 
         let intake = Manifold {
@@ -144,7 +144,7 @@ impl EngineCore {
         let num_cyl = config.num_cylinders;
 
         self.cylinders = (0..num_cyl)
-            .map(|i| CylinderState::at_rest(config.crank_phases[i]))
+            .map(|i| CylinderState::at_rest_cfg(&config, i))
             .collect();
 
         self.intake = Manifold {

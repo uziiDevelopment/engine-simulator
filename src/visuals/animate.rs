@@ -23,7 +23,7 @@ pub fn animate_crank(core: Res<EngineCore>, mut q: Query<&mut Transform, With<Cr
 pub fn animate_pistons(core: Res<EngineCore>, mut q: Query<(&Piston, &mut Transform)>) {
     for (p, mut t) in &mut q {
         if p.idx >= core.config.num_cylinders { continue; }
-        let y_p = core.config.piston_y(core.angle, core.config.crank_phases[p.idx]) * VIS_SCALE;
+        let y_p = core.config.piston_y(core.angle, p.idx) * VIS_SCALE;
         let x = core.config.cyl_visual_x(p.idx);
         let tilt = p.bank_tilt;
         let pos = tilt_vec(x, y_p, 0.0, tilt);
@@ -37,12 +37,12 @@ pub fn animate_rods(core: Res<EngineCore>, mut q: Query<(&ConRod, &mut Transform
     let r = core.config.crank_radius() * VIS_SCALE;
     for (rod, mut t) in &mut q {
         if rod.idx >= core.config.num_cylinders { continue; }
-        let phase = core.config.crank_phases[rod.idx];
-        let theta = core.angle + phase;
+        let pin_phase = core.config.crank_phases[rod.idx];
+        let world_theta = core.angle + pin_phase;
         // Crank pin position (in world space, crank rotates in Y-Z plane)
-        let pin = Vec3::new(rod.base_x, r * theta.cos(), r * theta.sin());
+        let pin = Vec3::new(rod.base_x, r * world_theta.cos(), r * world_theta.sin());
         // Piston wrist-pin position (along the tilted bank axis)
-        let y_p = core.config.piston_y(core.angle, phase) * VIS_SCALE;
+        let y_p = core.config.piston_y(core.angle, rod.idx) * VIS_SCALE;
         let tilt = rod.bank_tilt;
         let small = tilt_vec(rod.base_x, y_p, 0.0, tilt);
         let mid = (pin + small) * 0.5;
@@ -90,8 +90,7 @@ pub fn animate_cylinder_gas(
     for viz in &q {
         if viz.idx >= core.cylinders.len() { continue; }
         let cyl = &core.cylinders[viz.idx];
-        let phase = core.config.crank_phases[viz.idx];
-        let v = core.config.cyl_volume(core.angle, phase);
+        let v = core.config.cyl_volume(core.angle, viz.idx);
         let p = cyl.pressure_at(v);
 
         // Pressure ratio (1× ambient → 50×).  Maps to a blue→cyan→yellow→red
