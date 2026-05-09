@@ -219,9 +219,11 @@ pub fn engine_step(
         }
 
         // Step the oil reservoir with the heat we just collected.
-        core.oil.step(&core.oil_config, omega, total_friction_heat_w, 0.0, dt);
+        // Split-borrow: take refs to the two disjoint fields explicitly.
+        let EngineCore { ref oil_config, ref mut oil, .. } = *core;
+        oil.step(oil_config, omega, total_friction_heat_w, 0.0, dt);
         if total_oil_consumed > 0.0 {
-            core.oil.consume(total_oil_consumed);
+            oil.consume(total_oil_consumed);
         }
         last_friction_heat_w = total_friction_heat_w;
 
