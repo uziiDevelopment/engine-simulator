@@ -584,10 +584,14 @@ pub struct MechanicalStep {
     pub friction_torque: f32,
     /// Frictional power dumped into the oil this step (W).
     pub friction_heat_w: f32,
+    /// Thermal power transferred from the cylinder block into the oil this step (W).
+    pub block_heat_to_oil_w: f32,
     /// Oil mass burned by blow-by past worn rings (kg).
     pub oil_consumed: f32,
-    /// True if this cylinder reached a catastrophic-failure threshold.
-    pub failed: bool,
+    /// True if the cylinder friction-welded / galled to the block due to extreme heat.
+    pub seized: bool,
+    /// True if the rod (big-end) journal bearing has failed (spun or wiped).
+    pub bearing_seized: bool,
 }
 
 fn block_thermal_mass(cfg: &EngineConfig) -> f32 {
@@ -658,7 +662,7 @@ pub fn apply_mechanical_step_cfg(
     // WEAR_NORM converts m³ of removed material into a 0..1 service-life
     // fraction.  Tuned so ~tens of seconds of fully-dry abuse (oil drained or
     // very mismatched materials at scale=1000) takes a part to red.
-    const WEAR_NORM: f32 = 1.0e7;
+    const WEAR_NORM: f32 = 1.0e9;
     let scale = wear_time_scale.max(0.0);
     cyl.ring_wear = (cyl.ring_wear + wear_ring_v * WEAR_NORM * scale).clamp(0.0, 1.0);
     cyl.wall_wear = (cyl.wall_wear + wear_wall_v * WEAR_NORM * scale).clamp(0.0, 1.0);
@@ -683,8 +687,10 @@ pub fn apply_mechanical_step_cfg(
     cyl.piston_temp -= pist_to_block_K;
     cyl.block_temp += pist_to_block_K * (piston_cap / block_cap);
 
-    let block_to_oil_K = (cyl.block_temp - oil.temperature) * 0.45 * dt;
+    let oil_presence = (oil.mass / oil_cfg.capacity).clamp(0.0, 1.0);
+    let block_to_oil_K = (cyl.block_temp - oil.temperature) * 0.45 * oil_presence * dt;
     cyl.block_temp -= block_to_oil_K;
+    let block_heat_to_oil_w = if dt > 0.0 { (block_to_oil_K * block_cap) / dt } else { 0.0 };
 
     let block_to_air_K = (cyl.block_temp - T_ATM) * 0.04 * dt;
     cyl.block_temp -= block_to_air_K;
@@ -708,11 +714,10 @@ pub fn apply_mechanical_step_cfg(
     let oil_consumed = blow_by_factor * 1.0e-7 * piston_speed * dt;
 
     // ── Failure detection ───────────────────────────────────────────────────
+    // Thermal Galling / Melting: The aluminum piston expands and friction-welds to the bore.
     let melted_piston = cyl.piston_temp > mats.piston.melting_point;
     let melted_block = cyl.block_temp > mats.block.melting_point;
-    let snapped_rod = cyl.rod_damage >= 1.0;
-    let bored_out = cyl.wall_wear >= 1.0;
-    let failed = melted_piston || melted_block || snapped_rod || bored_out;
+    let seized = melted_piston || melted_block;
 
     cyl.last_friction_torque = friction_torque;
     let friction_power = friction_force * piston_speed;
@@ -721,7 +726,9 @@ pub fn apply_mechanical_step_cfg(
     MechanicalStep {
         friction_torque,
         friction_heat_w: friction_power,
+        block_heat_to_oil_w,
         oil_consumed,
-        failed,
+        seized,
+        bearing_seized: false, // rod bearing is stepped separately in engine.rs
     }
 }

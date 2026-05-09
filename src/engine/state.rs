@@ -7,12 +7,13 @@
 use bevy::prelude::*;
 use std::f32::consts::TAU;
 
-use super::config::{EngineConfig, ENGINES};
+use super::config::{EngineConfig, EngineLayout, ENGINES};
 use super::cylinder::CylinderState;
 use super::fuel::{Fuel, FUELS};
 use super::manifold::Manifold;
 use super::oil::{OilConfig, OilState};
 use super::thermo::{P_ATM, R_AIR, T_ATM, T_EXH_AMBIENT};
+use super::bearing::{BearingState, main_bearing_count};
 
 /// High-level engine run state.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -70,6 +71,14 @@ pub struct EngineCore {
     /// 1e6 = a couple minutes of abuse takes parts to red.
     pub wear_time_scale: f32,
 
+    // ── Journal bearings ────────────────────────────────────────────────────
+    /// Main (crankshaft) bearings — one per journal position.
+    pub main_bearings: Vec<BearingState>,
+    /// Rod (big-end) bearings — one per cylinder.
+    pub rod_bearings: Vec<BearingState>,
+    /// Cam bearings (aggregated into a single representative bearing).
+    pub cam_bearings: Vec<BearingState>,
+
     // Smoothed telemetry (for the UI; updated each frame)
     pub torque_smoothed:           f32, // Nm
     pub power_smoothed:            f32, // W
@@ -111,6 +120,12 @@ impl EngineCore {
         let oil_config = OilConfig::default();
         let oil = OilState::fresh(&oil_config);
 
+        let is_inline = config.layout == EngineLayout::Inline;
+        let n_main = main_bearing_count(num_cyl, is_inline);
+        let main_bearings: Vec<BearingState> = (0..n_main).map(|_| BearingState::fresh()).collect();
+        let rod_bearings: Vec<BearingState> = (0..num_cyl).map(|_| BearingState::fresh()).collect();
+        let cam_bearings: Vec<BearingState> = vec![BearingState::fresh()];
+
         Self {
             config,
             config_idx: engine_idx,
@@ -135,6 +150,10 @@ impl EngineCore {
             oil,
             engine_seized: false,
             wear_time_scale: 1_000.0,
+
+            main_bearings,
+            rod_bearings,
+            cam_bearings,
 
             torque_smoothed: 0.0,
             power_smoothed: 0.0,
@@ -207,6 +226,13 @@ impl EngineCore {
         self.engine_seized = false;
         self.oil_config = OilConfig::default();
         self.oil = OilState::fresh(&self.oil_config);
+
+        let is_inline = self.config.layout == EngineLayout::Inline;
+        let n_main = main_bearing_count(num_cyl, is_inline);
+        self.main_bearings = (0..n_main).map(|_| BearingState::fresh()).collect();
+        self.rod_bearings = (0..num_cyl).map(|_| BearingState::fresh()).collect();
+        self.cam_bearings = vec![BearingState::fresh()];
+
         self.torque_smoothed = 0.0;
         self.power_smoothed = 0.0;
         self.map_smoothed = P_ATM;

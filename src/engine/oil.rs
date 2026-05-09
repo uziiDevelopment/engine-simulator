@@ -15,6 +15,45 @@ use std::f32::consts::TAU;
 
 use super::thermo::T_ATM;
 
+/// SAE Oil Grade preset parameters.
+#[derive(Clone, Copy, Debug)]
+pub struct OilGrade {
+    pub name: &'static str,
+    /// Kinematic viscosity at 40°C (cSt).
+    pub v40: f32,
+    /// Kinematic viscosity at 100°C (cSt).
+    pub v100: f32,
+    pub description: &'static str,
+}
+
+pub const OIL_GRADES: &[OilGrade] = &[
+    OilGrade {
+        name: "0W-20",
+        v40: 45.0, v100: 8.5,
+        description: "Modern economy oil. Very thin, low friction.",
+    },
+    OilGrade {
+        name: "5W-30",
+        v40: 65.0, v100: 11.5,
+        description: "Modern standard synthetic. Good balance.",
+    },
+    OilGrade {
+        name: "10W-40",
+        v40: 95.0, v100: 14.5,
+        description: "Performance/European spec. Thicker film.",
+    },
+    OilGrade {
+        name: "0W-40",
+        v40: 75.0, v100: 13.5,
+        description: "High-VI premium synthetic. Wide temperature range.",
+    },
+    OilGrade {
+        name: "20W-50",
+        v40: 160.0, v100: 19.5,
+        description: "Classic/Racing oil. Very thick when cold.",
+    },
+];
+
 /// Tunable parameters of the lubrication system (per-engine).
 #[derive(Clone, Debug)]
 pub struct OilConfig {
@@ -30,18 +69,60 @@ pub struct OilConfig {
     pub pan_dissipation: f32,
     /// Pressure (Pa) above which the film is considered fully hydrodynamic.
     pub hydrodynamic_pressure: f32,
+    /// Current oil grade index into `OIL_GRADES`.
+    pub grade_idx: usize,
+    /// Is a custom grade active?
+    pub custom_grade: bool,
+    /// Kinematic viscosity @ 40°C (cSt).
+    pub v40: f32,
+    /// Kinematic viscosity @ 100°C (cSt).
+    pub v100: f32,
+    /// Active Arrhenius offset (computed).
+    pub viscosity_a: f32,
+    /// Active Arrhenius slope (computed).
+    pub viscosity_b: f32,
+    /// User tuning multiplier on top of the base grade curve.
+    pub viscosity_multiplier: f32,
 }
 
 impl Default for OilConfig {
     fn default() -> Self {
-        Self {
-            capacity: 4.0,                   // ~4.5 L of 5W-30
-            pump_displacement: 1.2e-5,       // m³/rev
-            relief_pressure: 4.0e5,          // 400 kPa = ~58 PSI
+        let grade = OIL_GRADES[1]; // 5W-30
+        let mut cfg = Self {
+            capacity: 4.0,
+            pump_displacement: 1.2e-5,
+            relief_pressure: 4.0e5,
             min_pickup_mass: 0.4,
             pan_dissipation: 18.0,
-            hydrodynamic_pressure: 2.0e5,    // 200 kPa = full film
-        }
+            hydrodynamic_pressure: 2.0e5,
+            grade_idx: 1,
+            custom_grade: false,
+            v40: grade.v40,
+            v100: grade.v100,
+            viscosity_a: 0.0,
+            viscosity_b: 0.0,
+            viscosity_multiplier: 1.0,
+        };
+        cfg.recalculate_constants();
+        cfg
+    }
+}
+
+impl OilConfig {
+    /// Solves for Arrhenius A and B based on v40 and v100 specs.
+    pub fn recalculate_constants(&mut self) {
+        let t1 = 313.15; // 40 C
+        let t2 = 373.15; // 100 C
+        
+        // Dynamic viscosity mu (Pa.s) approx = cSt * 0.00085 (density)
+        let mu1 = (self.v40 * 0.00085).max(1e-6);
+        let mu2 = (self.v100 * 0.00085).max(1e-6);
+        
+        // ln(mu1) = A + B/t1
+        // ln(mu2) = A + B/t2
+        // B = ln(mu1/mu2) / (1/t1 - 1/t2)
+        self.viscosity_b = (mu1 / mu2).ln() / (1.0/t1 - 1.0/t2);
+        self.viscosity_a = mu2.ln() - self.viscosity_b / t2;
     }
 }
 
@@ -62,7 +143,7 @@ impl OilState {
             mass: cfg.capacity,
             temperature,
             pressure: 0.0,
-            viscosity: viscosity_for(temperature),
+            viscosity: viscosity_for(temperature, cfg.viscosity_a, cfg.viscosity_b, cfg.viscosity_multiplier),
         }
     }
 
@@ -81,9 +162,15 @@ impl OilState {
         if !self.has_pickup(cfg) {
             return 0.0;
         }
+        // At extreme temperatures (e.g., > 140°C / 413 K), oil film strength begins to collapse.
+        // By 160°C (433 K), it provides almost no protection regardless of pressure.
+        let thermal_breakdown = (1.0 - (self.temperature - 413.0) / 20.0).clamp(0.0, 1.0);
+
         let residual = 0.45;
         let active = (self.pressure / cfg.hydrodynamic_pressure).clamp(0.0, 1.0);
-        (residual + (1.0 - residual) * active).clamp(0.0, 1.0)
+        let base_lube = (residual + (1.0 - residual) * active).clamp(0.0, 1.0);
+        
+        base_lube * thermal_breakdown
     }
 
     /// Step the oil one substep.
@@ -101,7 +188,7 @@ impl OilState {
         dt: f32,
     ) {
         // ── Viscosity from current temperature ─────────────────────────────
-        self.viscosity = viscosity_for(self.temperature);
+        self.viscosity = viscosity_for(self.temperature, cfg.viscosity_a, cfg.viscosity_b, cfg.viscosity_multiplier);
 
         // ── Pump pressure ──────────────────────────────────────────────────
         // Flow rate ∝ rpm.  Pressure ≈ flow * viscosity * lumped resistance.
@@ -127,6 +214,13 @@ impl OilState {
         let q_out = cfg.pan_dissipation * (self.temperature - T_ATM);
         let dT = (q_in - q_out) * dt / (mass_eff * C_OIL);
         self.temperature = (self.temperature + dT).clamp(T_ATM - 5.0, 600.0);
+
+        // ── Extreme heat burn-off ──────────────────────────────────────────
+        if self.temperature > 430.0 {
+            // Above ~157°C, oil starts evaporating/burning rapidly.
+            let burn_rate = (self.temperature - 430.0) * 0.005; // kg/s
+            self.consume(burn_rate * dt);
+        }
     }
 
     /// Manually empty the sump (for testing seizure).
@@ -140,7 +234,7 @@ impl OilState {
         self.mass = cfg.capacity;
         self.temperature = T_ATM;
         self.pressure = 0.0;
-        self.viscosity = viscosity_for(self.temperature);
+        self.viscosity = viscosity_for(self.temperature, cfg.viscosity_a, cfg.viscosity_b, cfg.viscosity_multiplier);
     }
 
     /// Burn off some oil mass (e.g. blow-by past worn rings).
@@ -149,10 +243,10 @@ impl OilState {
     }
 }
 
-/// Andrade-style viscosity curve fitted to roughly 5W-30 behaviour:
-/// 0.150 Pa·s at 293 K, 0.010 Pa·s at 373 K.
+/// Andrade-style viscosity curve: mu = exp(A + B/T)
 #[inline]
-pub fn viscosity_for(temperature_k: f32) -> f32 {
+pub fn viscosity_for(temperature_k: f32, a: f32, b: f32, multiplier: f32) -> f32 {
     let t = temperature_k.max(220.0);
-    (-14.53_f32 + 3700.0 / t).exp().clamp(0.001, 5.0)
+    let base = (a + b / t).exp();
+    (base * multiplier).clamp(0.001, 20.0)
 }

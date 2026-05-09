@@ -36,6 +36,7 @@
 //! | `crank`      | rotational dynamics (friction, starter, redline)        |
 //! | `state`      | the [`EngineCore`] resource glueing everything together |
 
+pub mod bearing;
 pub mod config;
 mod crank;
 mod cylinder;
@@ -48,6 +49,7 @@ mod state;
 mod thermo;
 mod valve;
 
+pub use bearing::*;
 pub use config::*;
 pub use crank::*;
 pub use cylinder::*;
@@ -155,8 +157,9 @@ pub fn engine_step(
         let mut total_torque_from_gas = 0.0_f32;
         let mut total_friction_torque = 0.0_f32;
         let mut total_friction_heat_w = 0.0_f32;
+        let mut total_block_heat_to_oil_w = 0.0_f32;
         let mut total_oil_consumed = 0.0_f32;
-        let mut any_failed = false;
+        let mut any_seized = false;
         let num_cyl = core.config.num_cylinders;
         let wear_time_scale = core.wear_time_scale;
         let EngineCore {
@@ -214,21 +217,123 @@ pub fn engine_step(
             );
             total_friction_torque += mech.friction_torque;
             total_friction_heat_w += mech.friction_heat_w;
+            total_block_heat_to_oil_w += mech.block_heat_to_oil_w;
             total_oil_consumed += mech.oil_consumed;
-            if mech.failed { any_failed = true; }
+            
+            // If the rod is snapped, it flails around and adds massive mechanical drag.
+            if rod_dmg_before >= 1.0 {
+                total_friction_torque += 150.0;
+            }
+
+            if mech.seized { any_seized = true; }
+            if mech.bearing_seized { any_seized = true; }
         }
 
+        // ── Step rod bearings (one per cylinder) ───────────────────────────
+        {
+            let EngineCore {
+                ref config, ref mut rod_bearings,
+                ref oil, ref oil_config, ref cylinders, ..
+            } = *core;
+            for i in 0..num_cyl {
+                if i >= rod_bearings.len() { break; }
+                // Rod bearing load = gas force + inertia on the crank pin.
+                let p_cyl = cylinders[i].last_pressure;
+                let piston_area = config.piston_area();
+                let gas_force = (p_cyl - P_ATM).abs() * piston_area;
+                let piston_mass = config.materials.piston.density * piston_area * 0.04;
+                let crank_r = config.crank_radius();
+                let phase = config.crank_phases[i];
+                let theta_mid = 0.5 * (angle_old + angle_new);
+                let inertia_force = (piston_mass * omega * omega * crank_r
+                    * (theta_mid + phase).cos()).abs();
+                let rod_load = gas_force + inertia_force;
+
+                let brg_result = bearing::step_bearing(
+                    &config.materials.rod_bearing,
+                    &mut rod_bearings[i],
+                    rod_load,
+                    omega,
+                    oil,
+                    oil_config,
+                    dt,
+                    wear_time_scale,
+                );
+                total_friction_torque += brg_result.friction_torque;
+                total_friction_heat_w += brg_result.heat_to_oil_w;
+                if brg_result.seized { any_seized = true; }
+            }
+        }
+
+        // ── Step main bearings ────────────────────────────────────────
+        {
+            let EngineCore {
+                ref config, ref mut main_bearings,
+                ref oil, ref oil_config, ..
+            } = *core;
+            // Aggregate crank load shared across main bearings.
+            // Rough estimate: total gas torque / crank radius, split evenly.
+            let n_mains = main_bearings.len().max(1);
+            let crank_r = config.crank_radius().max(0.01);
+            let total_crank_load = (total_torque_from_gas.abs() / crank_r)
+                + (config.materials.piston.density * config.piston_area() * 0.04
+                   * num_cyl as f32 * omega * omega * crank_r);
+            let load_per_main = total_crank_load / n_mains as f32;
+
+            for brg in main_bearings.iter_mut() {
+                let result = bearing::step_bearing(
+                    &config.materials.main_bearing,
+                    brg,
+                    load_per_main,
+                    omega,
+                    oil,
+                    oil_config,
+                    dt,
+                    wear_time_scale,
+                );
+                total_friction_torque += result.friction_torque;
+                total_friction_heat_w += result.heat_to_oil_w;
+                if result.seized { any_seized = true; }
+            }
+        }
+
+        // ── Step cam bearings ─────────────────────────────────────────
+        {
+            let EngineCore {
+                ref config, ref mut cam_bearings,
+                ref oil, ref oil_config, ..
+            } = *core;
+            // Cam runs at half crank speed; load is light (valve springs).
+            let cam_omega = omega * 0.5;
+            let cam_load = 200.0 * num_cyl as f32; // ~200 N per valve spring
+
+            for brg in cam_bearings.iter_mut() {
+                let result = bearing::step_bearing(
+                    &config.materials.cam_bearing,
+                    brg,
+                    cam_load,
+                    cam_omega,
+                    oil,
+                    oil_config,
+                    dt,
+                    wear_time_scale,
+                );
+                total_friction_torque += result.friction_torque;
+                total_friction_heat_w += result.heat_to_oil_w;
+                if result.seized { any_seized = true; }
+            }
+        }
         // Step the oil reservoir with the heat we just collected.
         // Split-borrow: take refs to the two disjoint fields explicitly.
         let EngineCore { ref oil_config, ref mut oil, .. } = *core;
-        oil.step(oil_config, omega, total_friction_heat_w, 0.0, dt);
+        oil.step(oil_config, omega, total_friction_heat_w, total_block_heat_to_oil_w, dt);
         if total_oil_consumed > 0.0 {
             oil.consume(total_oil_consumed);
         }
         last_friction_heat_w = total_friction_heat_w;
 
-        // Latch a permanent seizure if anyone failed.
-        if any_failed {
+        // Latch a permanent seizure if anyone locked up thermally.
+        if any_seized {
             core.engine_seized = true;
         }
 

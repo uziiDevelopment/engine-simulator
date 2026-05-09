@@ -10,6 +10,7 @@
 use std::f32::consts::PI;
 use std::sync::LazyLock;
 use super::material::{Material, CAST_IRON, ALUMINUM_ALLOY, STOCK_STEEL, FORGED_STEEL};
+use super::bearing::BearingConfig;
 
 #[derive(Clone, Debug)]
 pub struct MaterialsConfig {
@@ -18,17 +19,32 @@ pub struct MaterialsConfig {
     pub piston: Material,
     pub piston_ring: Material,
     pub conrod: Material,
+    // ── Journal bearings ────────────────────────────────────────────────────
+    pub main_bearing: BearingConfig,
+    pub rod_bearing: BearingConfig,
+    pub cam_bearing: BearingConfig,
 }
 
-impl Default for MaterialsConfig {
-    fn default() -> Self {
+impl MaterialsConfig {
+    /// Build a default materials config with bearing sizes proportional to the
+    /// supplied bore diameter.
+    pub fn default_for_bore(bore: f32) -> Self {
         Self {
             block: CAST_IRON,
             cylinder_wall: CAST_IRON,
             piston: ALUMINUM_ALLOY,
             piston_ring: STOCK_STEEL,
             conrod: FORGED_STEEL,
+            main_bearing: BearingConfig::default_main(bore),
+            rod_bearing: BearingConfig::default_rod(bore),
+            cam_bearing: BearingConfig::default_cam(bore),
         }
+    }
+}
+
+impl Default for MaterialsConfig {
+    fn default() -> Self {
+        Self::default_for_bore(0.086) // default inline-4 bore
     }
 }
 
@@ -290,7 +306,7 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
         exhaust_valve_diameter: 0.030,
 
         cylinder_spacing: 0.10,
-        materials: MaterialsConfig::default(),
+        materials: MaterialsConfig::default_for_bore(0.086),
     },
 
     // ── 5.0L V8 (like a Ford Coyote / Chevy LS) — 90° cross-plane ──────────
@@ -334,7 +350,7 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
         exhaust_valve_diameter: 0.032,
 
         cylinder_spacing: 0.11,
-        materials: MaterialsConfig::default(),
+        materials: MaterialsConfig::default_for_bore(0.092),
     },
 
     // ── 3.8L Flat-6 (like a Porsche 997) ────────────────────────────────────
@@ -378,7 +394,7 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
         exhaust_valve_diameter: 0.031,
 
         cylinder_spacing: 0.12,
-        materials: MaterialsConfig::default(),
+        materials: MaterialsConfig::default_for_bore(0.102),
     },
 ]);
 
@@ -493,6 +509,6 @@ pub fn build_engine(
         exhaust_valve_diameter: 0.030,
 
         cylinder_spacing: 0.10,
-        materials: MaterialsConfig::default(),
+        materials: MaterialsConfig::default_for_bore(bore),
     }
 }
