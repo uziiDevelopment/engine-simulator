@@ -79,7 +79,11 @@ fn engine_input(keys: Res<ButtonInput<KeyCode>>, mut core: ResMut<EngineCore>) {
 ///
 /// Internally we sub-step at a few kHz so the gas dynamics stay stable even at
 /// redline (where 1° of crank only takes ~22 µs).
-pub fn engine_step(time: Res<Time>, mut core: ResMut<EngineCore>) {
+pub fn engine_step(
+    time: Res<Time>,
+    mut core: ResMut<EngineCore>,
+    audio_tx: Option<ResMut<crate::audio::AudioTx>>,
+) {
     let frame_dt = time.delta_seconds().min(1.0 / 30.0) * core.time_scale;
     let substeps: usize = 80;
     let dt = frame_dt / substeps as f32;
@@ -90,6 +94,8 @@ pub fn engine_step(time: Res<Time>, mut core: ResMut<EngineCore>) {
     let mut last_torque = 0.0_f32;
     let mut total_fuel_burned = 0.0_f32;
     let mut total_work = 0.0_f32;
+    
+    let mut audio_buffer = Vec::with_capacity(substeps);
 
     for _ in 0..substeps {
         let rpm = core.rpm();
@@ -180,6 +186,22 @@ pub fn engine_step(time: Res<Time>, mut core: ResMut<EngineCore>) {
 
         last_torque = tau_total;
         total_work += tau_total * core.omega * dt;
+
+        // Push audio sample
+        if core.audio_enabled {
+            let exhaust_pressure = core.exhaust.pressure();
+            // Atmospheric pressure is 101325.0 Pa. Scale it down for audio (-1.0 to 1.0)
+            let audio_sample = (exhaust_pressure - 101325.0) * 0.00005;
+            audio_buffer.push((dt, audio_sample));
+        }
+    }
+
+    if let Some(tx) = audio_tx {
+        if core.audio_enabled && !audio_buffer.is_empty() {
+            if let Ok(mut buffer) = tx.buffer.try_lock() {
+                buffer.extend(audio_buffer);
+            }
+        }
     }
 
     // ── Smooth telemetry for the UI ──────────────────────────────────────

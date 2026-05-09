@@ -136,6 +136,13 @@ fn ui_panel(mut ctx: EguiContexts, mut core: ResMut<EngineCore>) {
             ui.separator();
             ui.add_space(4.0);
 
+            // ── Audio ────────────────────────────────────────────────────
+            ui.checkbox(&mut core.audio_enabled, "Audio Simulation");
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+
             // ── Controls + spec ──────────────────────────────────────────
             ui.label(egui::RichText::new("Controls").strong());
             ui.label("E — starter motor");

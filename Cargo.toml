@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 bevy = "0.14"
 bevy_egui = "0.30"
+ringbuf = "0.3"
+rodio = "0.18.1"
 
 [profile.dev]
 opt-level = 1

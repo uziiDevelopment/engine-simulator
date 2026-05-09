@@ -44,6 +44,7 @@ pub struct EngineCore {
     pub time_scale:     f32,      // 1.0 = real-time, < 1 = slow-mo
     pub fuel:           Fuel,
     pub fuel_idx:       usize,
+    pub audio_enabled:  bool,
 
     // Sub-models (Vec allows variable cylinder counts)
     pub cylinders: Vec<CylinderState>,
@@ -99,6 +100,7 @@ impl EngineCore {
             time_scale: 1.0,
             fuel: FUELS[fuel_idx.min(FUELS.len() - 1)],
             fuel_idx,
+            audio_enabled: true,
             cylinders,
             intake,
             exhaust,

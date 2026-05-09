@@ -12,6 +12,7 @@ mod camera;
 mod engine;
 mod ui;
 mod visuals;
+mod audio;
 
 use bevy::prelude::*;
 use bevy_egui::EguiPlugin;
@@ -33,5 +34,6 @@ fn main() {
         .add_plugins(visuals::VisualsPlugin)
         .add_plugins(camera::CameraPlugin)
         .add_plugins(ui::UiPlugin)
+        .add_plugins(audio::EngineAudioPlugin)
         .run();
 }

@@ -127,9 +127,15 @@ pub fn spawn_engine_visuals(
         EngineVisual, Crankshaft, SpatialBundle::default(),
     )).id();
 
-    // Main bearing journals (one more than crank_pos)
-    for i in 0..=crank_pos {
-        let x = (i as f32 - crank_pos as f32 * 0.5) * cyl_spacing * s;
+    // Main bearing journals
+    // For Inline/Flat, length is related to number of cylinders or pairs.
+    let journal_count = match cfg.layout {
+        crate::engine::EngineLayout::Inline => num_cyl + 1,
+        crate::engine::EngineLayout::V => (num_cyl / 2) + 1,
+        crate::engine::EngineLayout::Flat => (num_cyl / 2) + 1,
+    };
+    for i in 0..journal_count {
+        let x = (i as f32 - (journal_count as f32 - 1.0) * 0.5) * cyl_spacing * s;
         commands.spawn((EngineVisual, PbrBundle {
             mesh: main_journal_mesh.clone(),
             material: crank_mat.clone(),
@@ -138,13 +144,15 @@ pub fn spawn_engine_visuals(
         })).set_parent(crank_entity);
     }
 
-    // Crank throws — one per crank position.  For V/Flat, the throw serves
-    // two cylinders (paired on same X).  We use the phase of the first
-    // cylinder at each position.
-    for pos in 0..crank_pos {
+    // Crank throws — one per physical pin position.
+    let pin_count = match cfg.layout {
+        crate::engine::EngineLayout::Inline | crate::engine::EngineLayout::Flat => num_cyl,
+        crate::engine::EngineLayout::V => num_cyl / 2,
+    };
+    for pos in 0..pin_count {
         let cyl_idx = match cfg.layout {
-            crate::engine::EngineLayout::Inline => pos,
-            _ => pos * 2, // first cylinder of the pair
+            crate::engine::EngineLayout::Inline | crate::engine::EngineLayout::Flat => pos,
+            crate::engine::EngineLayout::V => pos * 2, // first cylinder of the pair
         };
         let x = cfg.cyl_visual_x(cyl_idx);
         let phi = cfg.crank_phases[cyl_idx];
@@ -170,7 +178,7 @@ pub fn spawn_engine_visuals(
     }
 
     // Front pulley + flywheel + output shaft
-    let half_len = (crank_pos as f32 * 0.5 + 0.5) * cyl_spacing * s;
+    let half_len = (journal_count as f32 * 0.5) * cyl_spacing * s;
     let front_x = -half_len;
     let rear_x  =  half_len;
 
@@ -322,7 +330,7 @@ pub fn spawn_engine_visuals(
     // ── Cylinder head block(s) ─────────────────────────────────────────────
     // For inline: one head block.  For V/Flat: one per bank.
     let head_y = rod_length * s + 0.18 * s;
-    let head_width = (crank_pos as f32 * cyl_spacing + 0.08) * s;
+    let head_width = (journal_count as f32 * cyl_spacing + 0.08) * s;
 
     match cfg.layout {
         crate::engine::EngineLayout::Inline => {

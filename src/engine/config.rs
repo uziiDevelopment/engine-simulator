@@ -176,15 +176,31 @@ impl EngineConfig {
 
     /// Visual X position along the crankshaft for a cylinder.
     /// For V engines, paired cylinders share the same X.
+    /// For Flat engines, cylinders are grouped closely in opposing pairs.
     #[inline]
     pub fn cyl_visual_x(&self, i: usize) -> f32 {
-        let positions = self.crank_positions();
-        let idx_along_crank = match self.layout {
-            EngineLayout::Inline | EngineLayout::Flat => i,
-            EngineLayout::V => i / 2,
-        };
-        let center = (positions as f32 - 1.0) * 0.5;
-        (idx_along_crank as f32 - center) * self.cylinder_spacing * VIS_SCALE
+        match self.layout {
+            EngineLayout::Inline => {
+                let center = (self.num_cylinders as f32 - 1.0) * 0.5;
+                (i as f32 - center) * self.cylinder_spacing * VIS_SCALE
+            }
+            EngineLayout::V => {
+                let positions = self.crank_positions();
+                let center = (positions as f32 - 1.0) * 0.5;
+                ((i / 2) as f32 - center) * self.cylinder_spacing * VIS_SCALE
+            }
+            EngineLayout::Flat => {
+                let pairs = self.num_cylinders / 2;
+                let center_pair = (pairs as f32 - 1.0) * 0.5;
+                let pair_idx = i / 2;
+                let is_odd = (i % 2) as f32;
+                // Base position of the pair
+                let base_x = (pair_idx as f32 - center_pair) * self.cylinder_spacing;
+                // Small stagger: even cylinders shifted slightly left, odd slightly right
+                let stagger = (is_odd - 0.5) * 0.35 * self.cylinder_spacing; 
+                (base_x + stagger) * VIS_SCALE
+            }
+        }
     }
 
     /// Bank tilt angle for a cylinder (rotation around the X/crank axis).
@@ -237,7 +253,7 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
         friction_viscous: 0.045,
         friction_windage: 0.00012,
 
-        starter_torque: 80.0,
+        starter_torque: 250.0,
         starter_disengage_rpm: 600.0,
         redline_rpm: 8000.0,
         stall_rpm: 220.0,
@@ -280,7 +296,7 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
         friction_viscous: 0.065,
         friction_windage: 0.00018,
 
-        starter_torque: 120.0,
+        starter_torque: 250.0,
         starter_disengage_rpm: 500.0,
         redline_rpm: 7000.0,
         stall_rpm: 280.0,
@@ -323,7 +339,7 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
         friction_viscous: 0.050,
         friction_windage: 0.00015,
 
-        starter_torque: 90.0,
+        starter_torque: 250.0,
         starter_disengage_rpm: 550.0,
         redline_rpm: 8500.0,
         stall_rpm: 250.0,
