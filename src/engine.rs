@@ -43,6 +43,7 @@ mod fuel;
 mod geometry;
 mod manifold;
 pub mod material;
+pub mod oil;
 mod state;
 mod thermo;
 mod valve;
@@ -54,6 +55,7 @@ pub use fuel::*;
 pub use geometry::*;
 pub use manifold::*;
 pub use material::*;
+pub use oil::*;
 pub use state::*;
 pub use thermo::*;
 pub use valve::*;
@@ -96,16 +98,24 @@ pub fn engine_step(
     let mut last_torque = 0.0_f32;
     let mut total_fuel_burned = 0.0_f32;
     let mut total_work = 0.0_f32;
-    
+    let mut last_friction_heat_w = 0.0_f32;
+
     let mut audio_buffer = Vec::with_capacity(substeps);
 
     for _ in 0..substeps {
         let rpm = core.rpm();
 
         // ── Run-state machine ────────────────────────────────────────────
+        // A seized engine refuses to spin regardless of player input.
+        if core.engine_seized {
+            core.run_state = RunState::Off;
+            core.omega = 0.0;
+            core.starter_active = false;
+        }
+
         match core.run_state {
             RunState::Off => {
-                if core.starter_active {
+                if core.starter_active && !core.engine_seized {
                     core.run_state = RunState::Cranking;
                 }
             }
@@ -143,13 +153,34 @@ pub fn engine_step(
         let fourstroke_new = fourstroke_old + omega * dt;
 
         let mut total_torque_from_gas = 0.0_f32;
+        let mut total_friction_torque = 0.0_f32;
+        let mut total_friction_heat_w = 0.0_f32;
+        let mut total_oil_consumed = 0.0_f32;
+        let mut any_failed = false;
         let num_cyl = core.config.num_cylinders;
-        let EngineCore { ref config, ref fuel, ref mut cylinders, ref mut intake, ref mut exhaust, .. } = *core;
+        let wear_time_scale = core.wear_time_scale;
+        let EngineCore {
+            ref config, ref fuel,
+            ref mut cylinders,
+            ref mut intake, ref mut exhaust,
+            ref oil_config, ref oil,
+            ..
+        } = *core;
 
         manifold::throttle_flow_cfg(config, intake, throttle_eff, dt);
         manifold::exhaust_to_atmosphere_cfg(config, exhaust, dt);
 
         for i in 0..num_cyl {
+            // Worn-out cylinders contribute reduced gas torque (lost compression
+            // through worn rings/walls).  rod_damage at 1.0 = snapped, so the
+            // cylinder simply can't push.
+            let rod_dmg_before = cylinders[i].rod_damage;
+            let wall_w_before = cylinders[i].wall_wear;
+            let ring_w_before = cylinders[i].ring_wear;
+            let compression_factor =
+                (1.0 - 0.6 * wall_w_before - 0.4 * ring_w_before).max(0.0);
+            let cyl_alive = (1.0 - rod_dmg_before).max(0.0);
+
             let (tau, fuel_burned) = cylinder::step_cylinder_cfg(
                 config,
                 &mut cylinders[i],
@@ -164,13 +195,45 @@ pub fn engine_step(
                 dt,
                 combustion_enabled,
             );
-            total_torque_from_gas += tau;
+            let derated = tau * compression_factor * cyl_alive;
+            total_torque_from_gas += derated;
             total_fuel_burned += fuel_burned;
+
+            // Material-aware mechanical step (friction, wear, thermal, rod stress).
+            let mech = cylinder::apply_mechanical_step_cfg(
+                config,
+                &mut cylinders[i],
+                i,
+                angle_old,
+                angle_new,
+                omega,
+                dt,
+                oil,
+                oil_config,
+                wear_time_scale,
+            );
+            total_friction_torque += mech.friction_torque;
+            total_friction_heat_w += mech.friction_heat_w;
+            total_oil_consumed += mech.oil_consumed;
+            if mech.failed { any_failed = true; }
+        }
+
+        // Step the oil reservoir with the heat we just collected.
+        core.oil.step(&core.oil_config, omega, total_friction_heat_w, 0.0, dt);
+        if total_oil_consumed > 0.0 {
+            core.oil.consume(total_oil_consumed);
+        }
+        last_friction_heat_w = total_friction_heat_w;
+
+        // Latch a permanent seizure if anyone failed.
+        if any_failed {
+            core.engine_seized = true;
         }
 
         // ── Friction + starter + soft rev-limit ──────────────────────────
         let mut tau_total = total_torque_from_gas;
         tau_total -= core.config.friction_torque(core.omega);
+        tau_total -= total_friction_torque; // material-aware ring/wall drag
         tau_total += core.config.starter_torque_at(rpm, core.starter_active);
 
         if rpm > core.config.redline_rpm {
@@ -222,4 +285,5 @@ pub fn engine_step(
 
     core.last_frame_fuel_kg = total_fuel_burned;
     core.last_frame_work_j = total_work;
+    core.friction_heat_smoothed += (last_friction_heat_w - core.friction_heat_smoothed) * 0.06;
 }

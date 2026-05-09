@@ -19,6 +19,8 @@ use super::config::EngineConfig;
 use super::fuel::Fuel;
 use super::geometry::*;
 use super::manifold::Manifold;
+use super::material::ContactSurface;
+use super::oil::{OilConfig, OilState};
 use super::thermo::*;
 use super::valve::{
     exhaust_lift_for_cyl, exhaust_lift_for_cyl_cfg,
@@ -53,6 +55,24 @@ pub struct CylinderState {
     pub exhaust_lift:     f32,    // m
     pub last_intake_flow: f32,    // kg/s, signed (+ = into cyl)
     pub last_exhaust_flow:f32,    // kg/s, signed (+ = out of cyl)
+
+    // ── Mechanical health (the new material-aware bits) ─────────────────────
+    /// 0..1 — bore-wall material loss fraction.  1.0 = service limit reached.
+    pub wall_wear:        f32,
+    /// 0..1 — piston-ring material loss fraction.
+    pub ring_wear:        f32,
+    /// 0..1 — connecting-rod fatigue / yield damage.  1.0 = snapped.
+    pub rod_damage:       f32,
+    /// K — local cylinder-wall temperature (slice of block thermal mass).
+    pub block_temp:       f32,
+    /// K — piston crown temperature.
+    pub piston_temp:      f32,
+    /// Friction heat dumped this substep (W) — telemetry / oil heating.
+    pub last_friction_heat: f32,
+    /// Mechanical drag this substep (Nm) added to the crank.
+    pub last_friction_torque: f32,
+    /// Peak axial force the rod has seen (N) — telemetry.
+    pub last_rod_stress:  f32,
 }
 
 impl CylinderState {
@@ -93,6 +113,14 @@ impl CylinderState {
             exhaust_lift: 0.0,
             last_intake_flow: 0.0,
             last_exhaust_flow: 0.0,
+            wall_wear: 0.0,
+            ring_wear: 0.0,
+            rod_damage: 0.0,
+            block_temp: T_ATM,
+            piston_temp: T_ATM,
+            last_friction_heat: 0.0,
+            last_friction_torque: 0.0,
+            last_rod_stress: 0.0,
         }
     }
 
@@ -117,6 +145,14 @@ impl CylinderState {
             exhaust_lift: 0.0,
             last_intake_flow: 0.0,
             last_exhaust_flow: 0.0,
+            wall_wear: 0.0,
+            ring_wear: 0.0,
+            rod_damage: 0.0,
+            block_temp: T_ATM,
+            piston_temp: T_ATM,
+            last_friction_heat: 0.0,
+            last_friction_torque: 0.0,
+            last_rod_stress: 0.0,
         }
     }
 }
@@ -429,13 +465,21 @@ pub fn step_cylinder_cfg(
     }
 
     // ── Heat loss to walls ─────────────────────────────────────────────────
-    let wall_temp = 410.0;
+    //
+    // Wall temperature is the dynamic per-cylinder block-slice temperature
+    // (`cyl.block_temp`), updated downstream by `apply_mechanical_step_cfg`
+    // along with friction heat and dissipation to oil + air.
+    let wall_temp = cyl.block_temp;
     let h_w = 480.0;
     let bore = cfg.bore;
     let piston_area = cfg.piston_area();
     let surface_area = PI * bore * (cfg.stroke_top() - cfg.piston_y(angle_new, cyl_idx)).max(0.0)
         + 2.0 * piston_area;
     let q_wall = h_w * surface_area * (cyl.temperature - wall_temp) * dt;
+    // Add the wall-bound combustion heat to the block thermal mass.
+    let block_thermal_mass =
+        1.5 * cfg.materials.block.specific_heat.max(100.0); // ~1.5 kg per cyl slice
+    cyl.block_temp += q_wall / block_thermal_mass;
 
     // ── Energy balance ─────────────────────────────────────────────────────
     let p_mid = p_old;
@@ -512,4 +556,148 @@ pub fn step_cylinder_cfg(
 
     let fuel_burned_step = if heat_release > 0.0 { heat_release / fuel.lhv.max(1.0) } else { 0.0 };
     (torque, fuel_burned_step)
+}
+
+/// Result of a single mechanical / material substep for one cylinder.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MechanicalStep {
+    /// Torque drag from boundary/hydrodynamic friction at the ring/wall interface (Nm, ≥ 0).
+    pub friction_torque: f32,
+    /// Frictional power dumped into the oil this step (W).
+    pub friction_heat_w: f32,
+    /// Oil mass burned by blow-by past worn rings (kg).
+    pub oil_consumed: f32,
+    /// True if this cylinder reached a catastrophic-failure threshold.
+    pub failed: bool,
+}
+
+fn block_thermal_mass(cfg: &EngineConfig) -> f32 {
+    1.5 * cfg.materials.block.specific_heat.max(100.0)
+}
+
+fn piston_thermal_mass(cfg: &EngineConfig) -> f32 {
+    let mass = cfg.materials.piston.density * cfg.piston_area() * 0.04;
+    mass.max(0.1) * cfg.materials.piston.specific_heat.max(100.0)
+}
+
+/// Apply one substep of material-aware mechanics to a single cylinder.
+///
+/// Reads (gas state already updated by `step_cylinder_cfg`) + the active oil
+/// state, writes the cylinder's wear, block / piston temperatures, and rod
+/// damage.  Returns the friction drag the caller should subtract from the net
+/// crankshaft torque, plus the heat to dump into the oil this step.
+pub fn apply_mechanical_step_cfg(
+    cfg: &EngineConfig,
+    cyl: &mut CylinderState,
+    cyl_idx: usize,
+    angle_old: f32,
+    angle_new: f32,
+    omega: f32,
+    dt: f32,
+    oil: &OilState,
+    oil_cfg: &OilConfig,
+    wear_time_scale: f32,
+) -> MechanicalStep {
+    let mats = &cfg.materials;
+    let lube = oil.lubrication_factor(oil_cfg);
+
+    // ── Slider-crank quantities at mid-step ─────────────────────────────────
+    let theta = 0.5 * (angle_old + angle_new);
+    let phase = cfg.crank_phases[cyl_idx];
+    let crank_local = theta + phase;
+    let s = crank_local.sin();
+    let crank_r = cfg.crank_radius();
+    let rod_l = cfg.rod_length;
+    let rod_sin = (crank_r / rod_l) * s;
+    let rod_cos = (1.0 - rod_sin * rod_sin).max(0.0).sqrt().max(1e-6);
+    let tan_rod = rod_sin.abs() / rod_cos;
+
+    let dy_dtheta = cfg.dpiston_dtheta(theta, cyl_idx);
+    let piston_speed = (omega * dy_dtheta).abs();
+
+    // ── Side thrust at the ring/wall interface ──────────────────────────────
+    let piston_area = cfg.piston_area();
+    let p_now = cyl.last_pressure;
+    let force_axial_gas = (p_now - P_ATM).max(0.0) * piston_area;
+    let piston_mass = (mats.piston.density * piston_area * 0.04).max(0.05);
+    let piston_accel = omega * omega * crank_r * crank_local.cos();
+    let force_axial_inertia = (piston_mass * piston_accel).abs();
+    let force_axial = force_axial_gas + force_axial_inertia;
+    let ring_tension: f32 = 250.0;
+    let normal_force = ring_tension + force_axial * tan_rod;
+
+    // ── Ring vs wall contact ────────────────────────────────────────────────
+    let contact_rw = ContactSurface::new(&mats.piston_ring, &mats.cylinder_wall);
+    let (friction_force, heat_j, wear_ring_v, wear_wall_v) =
+        contact_rw.evaluate_with_lube(normal_force, piston_speed, dt, lube);
+
+    let friction_torque = (friction_force * dy_dtheta.abs()).max(0.0);
+
+    // ── Wear accumulation (Archard volume → 0..1 fraction) ──────────────────
+    const WEAR_NORM: f32 = 1.0e9;
+    let scale = wear_time_scale.max(0.0);
+    cyl.ring_wear = (cyl.ring_wear + wear_ring_v * WEAR_NORM * scale).clamp(0.0, 1.0);
+    cyl.wall_wear = (cyl.wall_wear + wear_wall_v * WEAR_NORM * scale).clamp(0.0, 1.0);
+
+    // ── Heat distribution between piston (ring side) and block (wall side) ──
+    let (split_a, split_b) = contact_rw.heat_split();
+    let q_piston = heat_j * split_a;
+    let q_block_friction = heat_j * split_b;
+
+    let block_cap = block_thermal_mass(cfg);
+    let piston_cap = piston_thermal_mass(cfg);
+    cyl.block_temp += q_block_friction / block_cap;
+    cyl.piston_temp += q_piston / piston_cap;
+
+    // Combustion-side heat that hits the piston crown each cycle.
+    let crown_h = 320.0;
+    let crown_q = crown_h * piston_area * (cyl.temperature - cyl.piston_temp).max(-200.0) * dt;
+    cyl.piston_temp += crown_q / piston_cap;
+
+    // ── Dissipation: piston → block, block → oil + ambient ──────────────────
+    let pist_to_block_K = (cyl.piston_temp - cyl.block_temp) * 0.20 * dt;
+    cyl.piston_temp -= pist_to_block_K;
+    cyl.block_temp += pist_to_block_K * (piston_cap / block_cap);
+
+    let block_to_oil_K = (cyl.block_temp - oil.temperature) * 0.45 * dt;
+    cyl.block_temp -= block_to_oil_K;
+
+    let block_to_air_K = (cyl.block_temp - T_ATM) * 0.04 * dt;
+    cyl.block_temp -= block_to_air_K;
+
+    cyl.block_temp = cyl.block_temp.clamp(T_ATM - 5.0, 2500.0);
+    cyl.piston_temp = cyl.piston_temp.clamp(T_ATM - 5.0, 2500.0);
+
+    // ── Rod stress vs yield ─────────────────────────────────────────────────
+    let rod_area = (cfg.bore * cfg.bore * 0.06).max(1.0e-4);
+    let rod_force = force_axial_gas + force_axial_inertia;
+    let stress = rod_force / rod_area;
+    let yield_str = mats.conrod.yield_strength * (1.0 - cyl.rod_damage * 0.7).max(0.3);
+    if stress > yield_str {
+        let overload = (stress - yield_str) / yield_str.max(1.0);
+        cyl.rod_damage = (cyl.rod_damage + overload * dt * 4.0).clamp(0.0, 1.0);
+    }
+    cyl.last_rod_stress = stress;
+
+    // ── Oil consumption from blow-by past worn rings ────────────────────────
+    let blow_by_factor = (cyl.ring_wear - 0.5).max(0.0) / 0.5;
+    let oil_consumed = blow_by_factor * 1.0e-7 * piston_speed * dt;
+
+    // ── Failure detection ───────────────────────────────────────────────────
+    let melted_piston = cyl.piston_temp > mats.piston.melting_point;
+    let melted_block = cyl.block_temp > mats.block.melting_point;
+    let snapped_rod = cyl.rod_damage >= 1.0;
+    let bored_out = cyl.wall_wear >= 1.0;
+    let failed = melted_piston || melted_block || snapped_rod || bored_out;
+
+    cyl.last_friction_torque = friction_torque;
+    let friction_power = friction_force * piston_speed;
+    cyl.last_friction_heat = friction_power;
+
+    MechanicalStep {
+        friction_torque,
+        friction_heat_w: friction_power,
+        oil_consumed,
+        failed,
+    }
 }

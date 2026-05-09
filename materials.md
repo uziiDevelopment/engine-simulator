@@ -118,3 +118,42 @@ Implement a system for viewing dynamic material damage visually.
 1.  **Baseline Test**: Run with default materials (Cast Iron, Aluminum pistons). Verify temperatures stabilize and wear is negligible over a short run (parts stay blue/normal).
 2.  **Hardness Mismatch Test**: Change piston rings to Tungsten and Block to Aluminum. The dynamic `ContactSurface` should calculate massive wear on the block. The cylinder block visual should glow orange and then red, while the tungsten rings remain blue (undamaged).
 3.  **Strength Test**: Change rods to a weak material (e.g., Cast Aluminum) and over-rev the engine or add forced induction. Inertial or pressure forces should exceed the yield strength and break the rod dynamically, causing the rod's visual to instantly snap to red.
+
+---
+
+## Part 2: Oil Lubrication System
+
+To accompany the physical materials system, we need a dynamic oil simulation that modulates friction, heat, and wear based on oil pressure and temperature. Without oil, the material system will rapidly destroy the engine.
+
+### User Review Required
+> [!WARNING]
+> Please review the Oil System implementation details. Adding oil pressure dynamics and thermal exchange means the engine will seize if run without oil or if a leak develops. Do you want oil loss to be a random event, or only triggered by specific damage (e.g., piston ring wear causes blow-by and oil consumption)?
+
+### Proposed Changes
+
+#### `src/engine/oil.rs` (New)
+*   Create a new module to handle fluid dynamics for the lubrication system.
+*   **`struct OilState`**: Tracks `mass` (kg), `temperature` (K), `pressure` (Pa), and `viscosity`.
+*   **`struct OilConfig`**: Defines `capacity` (kg), `base_viscosity`, `pump_capacity`, and `relief_valve_pressure`.
+*   **Logic**:
+    *   **Pressure generation**: Oil pump is driven by the crank. `flow_rate ∝ RPM`. `pressure = flow_rate * viscosity`.
+    *   **Pressure relief**: Pressure is capped at a maximum value (e.g., 60 PSI / 400 kPa).
+    *   **Starvation**: If `mass` drops below a minimum threshold (pickup tube uncovered), `pressure` drops to 0 immediately.
+
+#### `src/engine/material.rs` (Modify)
+*   Update `ContactSurface::evaluate` to accept a `lubrication_factor: f32` (0.0 to 1.0).
+*   **Hydrodynamic Lubrication**: When `lubrication_factor == 1.0` (healthy oil pressure), effective friction drops to near-zero (fluid friction) and wear drops to exactly zero.
+*   **Boundary Lubrication**: As pressure drops, `lubrication_factor` decreases, and the raw material `friction_coeff` begins to dominate, generating massive heat and Archard wear.
+
+#### `src/engine/state.rs` & `src/engine/cylinder.rs`
+*   **Thermal Exchange**: Oil acts as a coolant. It absorbs heat from the cylinder walls and piston (reducing their temperature) and dissipates it to the atmosphere via the oil pan surface area.
+*   **Oil Consumption / Leaks**: If cylinder `ring_wear` is high, oil leaks into the combustion chamber and is burned away (mass decreases).
+*   **Catastrophic Seizure**: If any part's wear or temperature exceeds critical thresholds due to oil starvation, set `core.engine_seized = true`. The engine locks up, RPM drops to 0, and the starter refuses to turn.
+
+#### `src/ui.rs` (Modify)
+*   Add **Oil Pressure** and **Oil Temp** gauges to the telemetry overlay.
+*   Display an "ENGINE SEIZED" warning if catastrophic failure occurs.
+
+### Verification Plan
+1. **Oil Starvation Test**: Introduce a button or event to "drain oil". Watch oil pressure drop to 0, friction skyrocket, temperatures spike, wear hit 1.0, and the engine seize abruptly.
+2. **Cold Start Simulation**: Viscosity should be high when cold, resulting in high oil pressure. As it warms up, viscosity drops and idle oil pressure stabilizes.

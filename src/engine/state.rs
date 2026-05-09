@@ -11,6 +11,7 @@ use super::config::{EngineConfig, ENGINES};
 use super::cylinder::CylinderState;
 use super::fuel::{Fuel, FUELS};
 use super::manifold::Manifold;
+use super::oil::{OilConfig, OilState};
 use super::thermo::{P_ATM, R_AIR, T_ATM, T_EXH_AMBIENT};
 
 /// High-level engine run state.
@@ -52,6 +53,19 @@ pub struct EngineCore {
     pub intake:    Manifold,
     pub exhaust:   Manifold,
 
+    // ── Lubrication ─────────────────────────────────────────────────────────
+    pub oil_config: OilConfig,
+    pub oil:        OilState,
+    /// Player-facing flag — becomes true as soon as any cylinder reaches a
+    /// catastrophic-failure threshold (rod snap, wall worn out, melted piston,
+    /// oil starvation).  Engine refuses to spin while set.
+    pub engine_seized: bool,
+
+    /// Multiplier on the Archard wear constant so destruction is observable
+    /// inside a play session.  1.0 = lab-realistic (basically invisible);
+    /// 1e6 = a couple minutes of abuse takes parts to red.
+    pub wear_time_scale: f32,
+
     // Smoothed telemetry (for the UI; updated each frame)
     pub torque_smoothed:           f32, // Nm
     pub power_smoothed:            f32, // W
@@ -61,6 +75,8 @@ pub struct EngineCore {
     pub exhaust_temp_smoothed:     f32, // K
     pub last_frame_fuel_kg:        f32,
     pub last_frame_work_j:         f32,
+    /// Smoothed friction-heat going into the oil (W) — for the gauge.
+    pub friction_heat_smoothed:    f32,
 }
 
 impl EngineCore {
@@ -88,6 +104,9 @@ impl EngineCore {
             label: "exhaust",
         };
 
+        let oil_config = OilConfig::default();
+        let oil = OilState::fresh(&oil_config);
+
         Self {
             config,
             config_idx: engine_idx,
@@ -107,6 +126,11 @@ impl EngineCore {
             intake,
             exhaust,
 
+            oil_config,
+            oil,
+            engine_seized: false,
+            wear_time_scale: 1_000.0,
+
             torque_smoothed: 0.0,
             power_smoothed: 0.0,
             map_smoothed: P_ATM,
@@ -115,6 +139,7 @@ impl EngineCore {
             exhaust_temp_smoothed: 600.0,
             last_frame_fuel_kg: 0.0,
             last_frame_work_j: 0.0,
+            friction_heat_smoothed: 0.0,
         }
     }
 
@@ -174,6 +199,9 @@ impl EngineCore {
         self.omega = 0.0;
         self.run_state = RunState::Off;
         self.starter_active = false;
+        self.engine_seized = false;
+        self.oil_config = OilConfig::default();
+        self.oil = OilState::fresh(&self.oil_config);
         self.torque_smoothed = 0.0;
         self.power_smoothed = 0.0;
         self.map_smoothed = P_ATM;
@@ -182,5 +210,6 @@ impl EngineCore {
         self.exhaust_temp_smoothed = 600.0;
         self.last_frame_fuel_kg = 0.0;
         self.last_frame_work_j = 0.0;
+        self.friction_heat_smoothed = 0.0;
     }
 }
