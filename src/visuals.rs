@@ -31,6 +31,8 @@ impl Plugin for VisualsPlugin {
                     animate::animate_cylinder_gas,
                     animate::animate_manifolds,
                     animate::animate_damage,
+                    sync_damage_visual_materials,
+                    discover_rod_attachments,
                 )
                     .chain()
                     .after(crate::engine::engine_step),
@@ -86,6 +88,13 @@ pub struct ConRod {
     pub base_x: f32,
     /// Bank tilt angle (rad) — 0 for inline.
     pub bank_tilt: f32,
+}
+
+/// Stores the local positions of the markers found in the GLB model.
+#[derive(Component)]
+pub struct RodAttachmentPoints {
+    pub top: Vec3,
+    pub bottom: Vec3,
 }
 
 #[derive(Component, Clone, Copy)]
@@ -144,4 +153,61 @@ pub struct DamageVisual {
     pub material: Handle<StandardMaterial>,
     pub base_color: Color,
     pub base_emissive: LinearRgba,
+}
+/// System that propagates the material from a [`DamageVisual`] root entity
+/// down to all its children (e.g. sub-meshes within a loaded GLB scene).
+pub fn sync_damage_visual_materials(
+    q_vis: Query<(Entity, &DamageVisual)>,
+    q_children: Query<&Children>,
+    mut q_material: Query<&mut Handle<StandardMaterial>>,
+) {
+    for (root, vis) in &q_vis {
+        // Apply to root itself if it has a mesh/material
+        if let Ok(mut mat) = q_material.get_mut(root) {
+            if *mat != vis.material {
+                *mat = vis.material.clone();
+            }
+        }
+        // Apply to all children in the hierarchy
+        for child in q_children.iter_descendants(root) {
+            if let Ok(mut mat) = q_material.get_mut(child) {
+                if *mat != vis.material {
+                    *mat = vis.material.clone();
+                }
+            }
+        }
+    }
+}
+
+/// Scans the children of a spawned rod to find the `attach_top` and `attach_bottom` 
+/// markers, then caches their local positions.
+pub fn discover_rod_attachments(
+    mut commands: Commands,
+    q_rods: Query<(Entity, &Children), (With<ConRod>, Without<RodAttachmentPoints>)>,
+    q_children: Query<&Children>,
+    q_named: Query<(&Name, &Transform)>,
+) {
+    for (entity, children) in &q_rods {
+        let mut top = None;
+        let mut bottom = None;
+
+        // Search descendants for the markers
+        let mut stack = children.to_vec();
+        while let Some(child) = stack.pop() {
+            if let Ok((name, transform)) = q_named.get(child) {
+                if name.as_str() == "attach_top" {
+                    top = Some(transform.translation);
+                } else if name.as_str() == "attach_bottom" {
+                    bottom = Some(transform.translation);
+                }
+            }
+            if let Ok(child_children) = q_children.get(child) {
+                stack.extend(child_children.iter());
+            }
+        }
+
+        if let (Some(t), Some(b)) = (top, bottom) {
+            commands.entity(entity).insert(RodAttachmentPoints { top: t, bottom: b });
+        }
+    }
 }

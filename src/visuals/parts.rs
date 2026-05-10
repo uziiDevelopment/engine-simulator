@@ -135,6 +135,7 @@ pub fn spawn_engine_visuals(
     // crankshaft axis (+X).  The pin offset (Blender Z) maps to +Y in Bevy.
     const MODEL_PIN_RADIUS: f32 = 4.72;  // Distance from center to pin in model units (scaled by node)
     const MODEL_LENGTH: f32 = 10.49;     // Total longitudinal length of one module throw (scaled)
+    const MODEL_ROD_LENGTH: f32 = 140.0;   // Assumed length of the rod model in units (adjust if needed)
 
     let radial_scale = (crank_radius * s) / MODEL_PIN_RADIUS;
     let length_scale = (cyl_spacing * s) / MODEL_LENGTH;
@@ -143,6 +144,7 @@ pub fn spawn_engine_visuals(
     let base_orient = Quat::from_rotation_y(std::f32::consts::PI / 2.0);
 
     let crank_scene: Handle<Scene> = asset_server.load("engine/crank/modular_crank.glb#Scene0");
+    let rod_scene: Handle<Scene>   = asset_server.load("engine/connecting_rod/connecting_rod.glb#Scene0");
 
     // Number of crank throw positions along the X axis.
     let pin_count = match cfg.layout {
@@ -306,10 +308,11 @@ commands.spawn((
                 base_color: rod_base,
                 base_emissive: rod_emissive,
             },
-            PbrBundle {
-                mesh: rod_mesh.clone(),
-                material: rod_mat_unique,
-                transform: Transform::from_translation(pos * 0.5),
+            SceneBundle {
+                scene: rod_scene.clone(),
+                transform: Transform::from_translation(pos * 0.5)
+                    .with_rotation(Quat::from_rotation_z(std::f32::consts::PI / 2.0))
+                    .with_scale(Vec3::splat((rod_length * s) / MODEL_ROD_LENGTH)),
                 ..default()
             },
         )).set_parent(grp_rods);
