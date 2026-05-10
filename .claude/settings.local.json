@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(cargo --version)",
-      "Bash(rustc --version)"
+      "Bash(rustc --version)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\uziid\\\\Documents\\\\engine-simulator\" -Recurse -Include \"*.rs\")",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(Get-ChildItem *)"
     ]
   }
 }

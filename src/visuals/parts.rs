@@ -131,6 +131,7 @@ pub fn spawn_engine_visuals(
     let journal_count = match cfg.layout {
         crate::engine::EngineLayout::Inline | crate::engine::EngineLayout::Flat => num_cyl + 1,
         crate::engine::EngineLayout::V => (num_cyl / 2) + 1,
+        crate::engine::EngineLayout::W { .. } => (num_cyl / 2) + 1,
     };
     for i in 0..journal_count {
         let x = (i as f32 - (journal_count as f32 - 1.0) * 0.5) * cyl_spacing * s;
@@ -146,11 +147,13 @@ pub fn spawn_engine_visuals(
     let pin_count = match cfg.layout {
         crate::engine::EngineLayout::Inline | crate::engine::EngineLayout::Flat => num_cyl,
         crate::engine::EngineLayout::V => num_cyl / 2,
+        crate::engine::EngineLayout::W { .. } => num_cyl / 2,
     };
     for pos in 0..pin_count {
         let cyl_idx = match cfg.layout {
             crate::engine::EngineLayout::Inline | crate::engine::EngineLayout::Flat => pos,
             crate::engine::EngineLayout::V => pos * 2, // first cylinder of the pair
+            crate::engine::EngineLayout::W { .. } => pos * 2, // each pin serves 2 cylinders
         };
         let x = cfg.cyl_visual_x(cyl_idx);
         let phi = cfg.crank_phases[cyl_idx];
@@ -433,6 +436,22 @@ pub fn spawn_engine_visuals(
                 transform: Transform::from_xyz(0.0, head_y, 0.0),
                 ..default()
             })).set_parent(grp_heads);
+        }
+        crate::engine::EngineLayout::W { .. } => {
+            // Four heads, one per bank (A, B, C, D)
+            let head_mesh = meshes.add(Cuboid::new(head_width, 0.05 * s, 0.12 * s));
+            for bank in 0..4usize {
+                let tilt = cfg.cyl_bank_tilt(bank);
+                let pos = tilt_position(0.0, head_y, 0.0, tilt);
+                let bank_name = ["A", "B", "C", "D"][bank];
+                commands.spawn((EngineVisual, Name::new(format!("Bank {} Head", bank_name)), PbrBundle {
+                    mesh: head_mesh.clone(),
+                    material: head_mat.clone(),
+                    transform: Transform::from_translation(pos)
+                        .with_rotation(Quat::from_rotation_x(tilt)),
+                    ..default()
+                })).set_parent(grp_heads);
+            }
         }
         _ => {
             // Two heads, one per bank, tilted

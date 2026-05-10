@@ -12,6 +12,16 @@ use std::sync::LazyLock;
 use super::material::{Material, CAST_IRON, ALUMINUM_ALLOY, STOCK_STEEL, FORGED_STEEL};
 use super::bearing::BearingConfig;
 
+// ── Per-engine preset submodules ──────────────────────────────────────────────
+pub mod inline4;
+pub mod inline5;
+pub mod inline6;
+pub mod v8;
+pub mod v10;
+pub mod v12;
+pub mod w16;
+pub mod flat6;
+
 #[derive(Clone, Debug)]
 pub struct MaterialsConfig {
     pub block: Material,
@@ -52,7 +62,7 @@ impl Default for MaterialsConfig {
 pub const MAX_CYL: usize = 1000;
 
 /// Physical layout of the engine block.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EngineLayout {
     /// All cylinders in a single row (bank angle = 0).
     Inline,
@@ -61,6 +71,9 @@ pub enum EngineLayout {
     V,
     /// Flat / boxer: two banks at 180°.
     Flat,
+    /// W-layout (e.g. Bugatti W16): two narrow-angle VR clusters at 90° to each other.
+    /// `narrow_angle` is the angle between the two banks within each VR sub-cluster (rad).
+    W { narrow_angle: f32 },
 }
 
 /// Complete physical description of an engine.
@@ -206,18 +219,20 @@ impl EngineConfig {
     }
 
     /// Number of crank positions along X for this layout.
-    /// Inline and Flat: num_cylinders.  V: (num_cylinders + 1) / 2.
+    /// Inline and Flat: num_cylinders.  V: (num_cylinders + 1) / 2.  W: num_cylinders / 4.
     #[inline]
     pub fn crank_positions(&self) -> usize {
         match self.layout {
             EngineLayout::Inline | EngineLayout::Flat => self.num_cylinders,
             EngineLayout::V => (self.num_cylinders + 1) / 2,
+            EngineLayout::W { .. } => self.num_cylinders / 4,
         }
     }
 
     /// Visual X position along the crankshaft for a cylinder.
     /// For V engines, paired cylinders share the same X.
     /// For Flat engines, cylinders are grouped closely in opposing pairs.
+    /// For W engines, 4 cylinders share each axial position.
     #[inline]
     pub fn cyl_visual_x(&self, i: usize) -> f32 {
         match self.layout {
@@ -230,12 +245,18 @@ impl EngineConfig {
                 let center = (positions as f32 - 1.0) * 0.5;
                 ((i / 2) as f32 - center) * self.cylinder_spacing * VIS_SCALE
             }
+            EngineLayout::W { .. } => {
+                let positions = self.num_cylinders / 4;
+                let center = (positions as f32 - 1.0) * 0.5;
+                ((i / 4) as f32 - center) * self.cylinder_spacing * VIS_SCALE
+            }
         }
     }
 
     /// Bank tilt angle for a cylinder (rotation around the X/crank axis).
     /// Returns 0 for inline.  For V/Flat: +half_angle for even (bank A),
     /// -half_angle for odd (bank B).
+    /// For W: 4 banks, cylinders grouped by i%4.
     #[inline]
     pub fn cyl_bank_tilt(&self, i: usize) -> f32 {
         match self.layout {
@@ -244,15 +265,26 @@ impl EngineConfig {
                 let half = self.bank_angle * 0.5;
                 if i % 2 == 0 { half } else { -half }
             }
+            EngineLayout::W { narrow_angle } => {
+                let outer_half = std::f32::consts::FRAC_PI_4; // 45°
+                let narrow_half = narrow_angle * 0.5;
+                match i % 4 {
+                    0 => outer_half + narrow_half,    // Bank A (far left)
+                    1 => outer_half - narrow_half,    // Bank B (inner left)
+                    2 => -(outer_half - narrow_half), // Bank C (inner right)
+                    _ => -(outer_half + narrow_half), // Bank D (far right)
+                }
+            }
         }
     }
 
-    /// Which bank (0 or 1) a cylinder belongs to.  Inline always returns 0.
+    /// Which bank (0..3) a cylinder belongs to.  Inline always returns 0.
     #[inline]
     pub fn cyl_bank(&self, i: usize) -> usize {
         match self.layout {
             EngineLayout::Inline => 0,
             EngineLayout::V | EngineLayout::Flat => i % 2,
+            EngineLayout::W { .. } => i % 4,
         }
     }
 }
@@ -265,373 +297,16 @@ use super::geometry::VIS_SCALE;
 // ══════════════════════════════════════════════════════════════════════════════
 
 pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
-    // ── 2.0L Inline-4 (like a Honda K20 / Toyota 3S-GE) ─────────────────────
-    EngineConfig {
-        name: "2.0L Inline-4",
-        layout: EngineLayout::Inline,
-        bank_angle: 0.0,
-        num_cylinders: 4,
-        bore: 0.086,
-        stroke: 0.086,
-        rod_length: 0.145,
-        compression_ratio: 10.5,
-        crank_phases: vec![0.0, PI, PI, 0.0],
-        firing_offsets_deg: vec![0.0, 540.0, 180.0, 360.0],
-
-        flywheel_inertia: 0.18,
-        friction_base: 12.0,
-        friction_viscous: 0.045,
-        friction_windage: 0.00012,
-
-        starter_torque: 250.0,
-        starter_disengage_rpm: 600.0,
-        redline_rpm: 8000.0,
-        stall_rpm: 220.0,
-
-        throttle_area_max: 0.0014,
-        idle_bleed_frac: 0.012,
-        idle_throttle_min: 0.015,
-
-        intake_volume: 0.0020,
-        exhaust_volume: 0.0015,
-        tailpipe_area: 0.0010,
-
-        intake_open_deg: 354.0,
-        intake_close_deg: 580.0,
-        exhaust_open_deg: 140.0,
-        exhaust_close_deg: 366.0,
-        intake_peak_lift: 0.010,
-        exhaust_peak_lift: 0.010,
-        intake_valve_diameter: 0.034,
-        exhaust_valve_diameter: 0.030,
-
-        cylinder_spacing: 0.10,
-        materials: MaterialsConfig::default_for_bore(0.086),
-    },
-
-    // ── 2.5L Inline-5 (like an Audi 2.5 TFSI) ───────────────────────────────
-    EngineConfig {
-        name: "2.5L Inline-5",
-        layout: EngineLayout::Inline,
-        bank_angle: 0.0,
-        num_cylinders: 5,
-        bore: 0.0825,
-        stroke: 0.0928,
-        rod_length: 0.144,
-        compression_ratio: 10.0,
-        // 144-degree evenly spaced crank throws
-        crank_phases: vec![0.0, 0.8 * PI, 1.2 * PI, 1.6 * PI, 0.4 * PI],
-        firing_offsets_deg: vec![0.0, 576.0, 144.0, 432.0, 288.0],
-
-        flywheel_inertia: 0.22,
-        friction_base: 14.5,
-        friction_viscous: 0.052,
-        friction_windage: 0.00014,
-
-        starter_torque: 280.0,
-        starter_disengage_rpm: 600.0,
-        redline_rpm: 7200.0,
-        stall_rpm: 240.0,
-
-        throttle_area_max: 0.0018,
-        idle_bleed_frac: 0.012,
-        idle_throttle_min: 0.015,
-        intake_volume: 0.0025,
-        exhaust_volume: 0.0020,
-        tailpipe_area: 0.0012,
-
-        intake_open_deg: 354.0,
-        intake_close_deg: 580.0,
-        exhaust_open_deg: 140.0,
-        exhaust_close_deg: 366.0,
-        intake_peak_lift: 0.011,
-        exhaust_peak_lift: 0.011,
-        intake_valve_diameter: 0.034,
-        exhaust_valve_diameter: 0.030,
-        cylinder_spacing: 0.10,
-        materials: MaterialsConfig::default_for_bore(0.0825),
-    },
-
-    // ── 3.0L Inline-6 (like a Toyota 2JZ / BMW B58) ─────────────────────────
-    EngineConfig {
-        name: "3.0L Inline-6",
-        layout: EngineLayout::Inline,
-        bank_angle: 0.0,
-        num_cylinders: 6,
-        bore: 0.086,
-        stroke: 0.086,
-        rod_length: 0.142,
-        compression_ratio: 9.0,
-        // 120-degree mirror-symmetrical crank
-        crank_phases: vec![0.0, 2.0 * PI / 3.0, 4.0 * PI / 3.0, 4.0 * PI / 3.0, 2.0 * PI / 3.0, 0.0],
-        firing_offsets_deg: vec![0.0, 600.0, 120.0, 480.0, 240.0, 360.0],
-
-        flywheel_inertia: 0.26,
-        friction_base: 16.0,
-        friction_viscous: 0.055,
-        friction_windage: 0.00016,
-
-        starter_torque: 300.0,
-        starter_disengage_rpm: 600.0,
-        redline_rpm: 7500.0,
-        stall_rpm: 250.0,
-
-        throttle_area_max: 0.0020,
-        idle_bleed_frac: 0.010,
-        idle_throttle_min: 0.013,
-        intake_volume: 0.0030,
-        exhaust_volume: 0.0025,
-        tailpipe_area: 0.0014,
-
-        intake_open_deg: 352.0,
-        intake_close_deg: 585.0,
-        exhaust_open_deg: 135.0,
-        exhaust_close_deg: 368.0,
-        intake_peak_lift: 0.011,
-        exhaust_peak_lift: 0.011,
-        intake_valve_diameter: 0.035,
-        exhaust_valve_diameter: 0.031,
-        cylinder_spacing: 0.10,
-        materials: MaterialsConfig::default_for_bore(0.086),
-    },
-
-    // ── 5.0L V8 (like a Ford Coyote / Chevy LS) — 90° cross-plane ──────────
-    EngineConfig {
-        name: "5.0L V8 (Cross-plane)",
-        layout: EngineLayout::V,
-        bank_angle: PI / 2.0,
-        num_cylinders: 8,
-        bore: 0.092,
-        stroke: 0.093,
-        rod_length: 0.152,
-        compression_ratio: 11.0,
-        crank_phases: vec![0.0, 0.0, PI * 0.5, PI * 0.5, PI * 1.5, PI * 1.5, PI, PI],
-        firing_offsets_deg: vec![45.0, 315.0, 675.0, 225.0, 135.0, 405.0, 585.0, 495.0],
-
-        flywheel_inertia: 0.35,
-        friction_base: 22.0,
-        friction_viscous: 0.065,
-        friction_windage: 0.00018,
-
-        starter_torque: 250.0,
-        starter_disengage_rpm: 500.0,
-        redline_rpm: 7000.0,
-        stall_rpm: 280.0,
-
-        throttle_area_max: 0.0024,
-        idle_bleed_frac: 0.010,
-        idle_throttle_min: 0.012,
-
-        intake_volume: 0.0050,
-        exhaust_volume: 0.0040,
-        tailpipe_area: 0.0018,
-
-        intake_open_deg: 350.0,
-        intake_close_deg: 590.0,
-        exhaust_open_deg: 130.0,
-        exhaust_close_deg: 370.0,
-        intake_peak_lift: 0.012,
-        exhaust_peak_lift: 0.012,
-        intake_valve_diameter: 0.037,
-        exhaust_valve_diameter: 0.032,
-
-        cylinder_spacing: 0.11,
-        materials: MaterialsConfig::default_for_bore(0.092),
-    },
-
-    // ── 5.2L V10 (like an Audi R8 / Lamborghini Huracan) ────────────────────
-    EngineConfig {
-        name: "5.2L V10",
-        layout: EngineLayout::V,
-        bank_angle: PI * 0.4, // 72-degree V for perfect primary balance and even firing
-        num_cylinders: 10,
-        bore: 0.0845,
-        stroke: 0.0928,
-        rod_length: 0.150,
-        compression_ratio: 12.5,
-        crank_phases: vec![
-            0.0, 0.0, 
-            0.8 * PI, 0.8 * PI, 
-            1.6 * PI, 1.6 * PI, 
-            0.4 * PI, 0.4 * PI, 
-            1.2 * PI, 1.2 * PI
-        ],
-        firing_offsets_deg: vec![36.0, 324.0, 612.0, 180.0, 468.0, 396.0, 684.0, 252.0, 540.0, 108.0],
-
-        flywheel_inertia: 0.28,
-        friction_base: 25.0,
-        friction_viscous: 0.070,
-        friction_windage: 0.00020,
-
-        starter_torque: 350.0,
-        starter_disengage_rpm: 650.0,
-        redline_rpm: 8500.0, // V10 screams!
-        stall_rpm: 300.0,
-
-        throttle_area_max: 0.0026,
-        idle_bleed_frac: 0.010,
-        idle_throttle_min: 0.012,
-        intake_volume: 0.0050,
-        exhaust_volume: 0.0040,
-        tailpipe_area: 0.0020,
-
-        intake_open_deg: 345.0,
-        intake_close_deg: 595.0,
-        exhaust_open_deg: 125.0,
-        exhaust_close_deg: 375.0,
-        intake_peak_lift: 0.012,
-        exhaust_peak_lift: 0.012,
-        intake_valve_diameter: 0.036,
-        exhaust_valve_diameter: 0.031,
-        cylinder_spacing: 0.11,
-        materials: MaterialsConfig::default_for_bore(0.0845),
-    },
-
-    // ── 6.5L V12 (like a Ferrari 812 / Lamborghini Aventador) ───────────────
-    EngineConfig {
-        name: "6.5L V12",
-        layout: EngineLayout::V,
-        bank_angle: PI / 3.0, // 60-degree V
-        num_cylinders: 12,
-        bore: 0.095,
-        stroke: 0.0764,
-        rod_length: 0.138,
-        compression_ratio: 11.8,
-        crank_phases: vec![
-            0.0, 0.0, 
-            2.0 * PI / 3.0, 2.0 * PI / 3.0, 
-            4.0 * PI / 3.0, 4.0 * PI / 3.0, 
-            4.0 * PI / 3.0, 4.0 * PI / 3.0, 
-            2.0 * PI / 3.0, 2.0 * PI / 3.0, 
-            0.0, 0.0
-        ],
-        firing_offsets_deg: vec![30.0, 330.0, 630.0, 210.0, 510.0, 450.0, 150.0, 90.0, 270.0, 570.0, 390.0, 690.0],
-
-        flywheel_inertia: 0.32,
-        friction_base: 28.0,
-        friction_viscous: 0.075,
-        friction_windage: 0.00022,
-
-        starter_torque: 400.0,
-        starter_disengage_rpm: 650.0,
-        redline_rpm: 8500.0,
-        stall_rpm: 300.0,
-
-        throttle_area_max: 0.0032,
-        idle_bleed_frac: 0.009,
-        idle_throttle_min: 0.011,
-        intake_volume: 0.0065,
-        exhaust_volume: 0.0050,
-        tailpipe_area: 0.0022,
-
-        intake_open_deg: 345.0,
-        intake_close_deg: 595.0,
-        exhaust_open_deg: 125.0,
-        exhaust_close_deg: 375.0,
-        intake_peak_lift: 0.012,
-        exhaust_peak_lift: 0.012,
-        intake_valve_diameter: 0.038,
-        exhaust_valve_diameter: 0.032,
-        cylinder_spacing: 0.11,
-        materials: MaterialsConfig::default_for_bore(0.095),
-    },
-
-    // ── 8.0L W16 (like a Bugatti Chiron, simulated physically as a V16) ─────
-    EngineConfig {
-        name: "8.0L W16 (Simulated as V16)",
-        layout: EngineLayout::V,
-        bank_angle: PI / 2.0, // 90-degree V equivalent
-        num_cylinders: 16,
-        bore: 0.086,
-        stroke: 0.086, // 16 x 500cc = 8.0L exactly
-        rod_length: 0.145,
-        compression_ratio: 9.0, // Turbocharged compression
-        crank_phases: vec![
-            0.0, 0.0, 
-            PI / 4.0, PI / 4.0, 
-            PI / 2.0, PI / 2.0, 
-            3.0 * PI / 4.0, 3.0 * PI / 4.0, 
-            PI, PI, 
-            5.0 * PI / 4.0, 5.0 * PI / 4.0, 
-            3.0 * PI / 2.0, 3.0 * PI / 2.0, 
-            7.0 * PI / 4.0, 7.0 * PI / 4.0
-        ],
-        // Produces flawless 45-degree exhaust pulses
-        firing_offsets_deg: vec![45.0, 315.0, 360.0, 270.0, 675.0, 225.0, 630.0, 180.0, 585.0, 135.0, 540.0, 90.0, 495.0, 405.0, 450.0, 0.0],
-
-        flywheel_inertia: 0.65, // Massive flywheel
-        friction_base: 40.0,
-        friction_viscous: 0.090,
-        friction_windage: 0.00030,
-
-        starter_torque: 550.0,
-        starter_disengage_rpm: 550.0,
-        redline_rpm: 6800.0,
-        stall_rpm: 350.0,
-
-        throttle_area_max: 0.0040,
-        idle_bleed_frac: 0.008,
-        idle_throttle_min: 0.010,
-        intake_volume: 0.0080,
-        exhaust_volume: 0.0065,
-        tailpipe_area: 0.0030,
-
-        intake_open_deg: 350.0,
-        intake_close_deg: 590.0,
-        exhaust_open_deg: 130.0,
-        exhaust_close_deg: 370.0,
-        intake_peak_lift: 0.011,
-        exhaust_peak_lift: 0.011,
-        intake_valve_diameter: 0.035,
-        exhaust_valve_diameter: 0.030,
-        cylinder_spacing: 0.11,
-        materials: MaterialsConfig::default_for_bore(0.086),
-    },
-
-    // ── 3.8L Flat-6 (like a Porsche 997) ────────────────────────────────────
-    EngineConfig {
-        name: "3.8L Flat-6",
-        layout: EngineLayout::Flat,
-        bank_angle: PI,
-        num_cylinders: 6,
-        bore: 0.102,
-        stroke: 0.077,
-        rod_length: 0.128,
-        compression_ratio: 12.5,
-        crank_phases: vec![0.0, PI, 2.0*PI/3.0, 5.0*PI/3.0, 4.0*PI/3.0, PI/3.0],
-        firing_offsets_deg: vec![90.0, 450.0, 330.0, 690.0, 210.0, 570.0],
-
-        flywheel_inertia: 0.14,
-        friction_base: 16.0,
-        friction_viscous: 0.050,
-        friction_windage: 0.00015,
-
-        starter_torque: 250.0,
-        starter_disengage_rpm: 550.0,
-        redline_rpm: 8500.0,
-        stall_rpm: 250.0,
-
-        throttle_area_max: 0.0020,
-        idle_bleed_frac: 0.010,
-        idle_throttle_min: 0.013,
-
-        intake_volume: 0.0035,
-        exhaust_volume: 0.0025,
-        tailpipe_area: 0.0014,
-
-        intake_open_deg: 348.0,
-        intake_close_deg: 576.0,
-        exhaust_open_deg: 136.0,
-        exhaust_close_deg: 368.0,
-        intake_peak_lift: 0.011,
-        exhaust_peak_lift: 0.011,
-        intake_valve_diameter: 0.036,
-        exhaust_valve_diameter: 0.031,
-
-        cylinder_spacing: 0.12,
-        materials: MaterialsConfig::default_for_bore(0.102),
-    },
+    inline4::preset(),
+    inline5::preset(),
+    inline6::preset(),
+    v8::preset(),
+    v10::preset(),
+    v12::preset(),
+    w16::preset(),
+    flat6::preset(),
 ]);
+
 #[inline]
 pub fn engine_count() -> usize { ENGINES.len() }
 
@@ -672,6 +347,24 @@ pub fn generate_v_phases(n: usize, bank_angle: f32) -> Vec<f32> {
         let base_phase = (pairs as f32 * spacing_deg % 360.0) * PI / 180.0;
         phases[n - 1] = base_phase;
     }
+    let _ = bank_angle; // used for documentation only
+    phases
+}
+
+/// Generate crank phases for a W engine with `n` cylinders (must be multiple of 4).
+/// n/4 axial positions; within each group of 4 (A,B,C,D): A+B share one throw,
+/// C+D share another throw PI/4 (45°) later.
+pub fn generate_w_phases(n: usize) -> Vec<f32> {
+    let groups = n / 4;
+    let mut phases = vec![0.0_f32; n];
+    for g in 0..groups {
+        let base = g as f32 * PI / (groups as f32 * 0.5); // 360°/(n/4) * g in radians
+        let offset = PI / 4.0; // C,D are 45° offset from A,B
+        phases[g * 4 + 0] = base;          // Bank A
+        phases[g * 4 + 1] = base;          // Bank B (same throw as A)
+        phases[g * 4 + 2] = base + offset; // Bank C
+        phases[g * 4 + 3] = base + offset; // Bank D (same throw as C)
+    }
     phases
 }
 
@@ -698,6 +391,7 @@ pub fn build_engine(
     let crank_phases = match layout {
         EngineLayout::Inline => generate_inline_phases(num_cylinders),
         EngineLayout::V | EngineLayout::Flat => generate_v_phases(num_cylinders, bank_angle),
+        EngineLayout::W { .. } => generate_w_phases(num_cylinders),
     };
     let firing_offsets_deg = generate_firing_offsets(num_cylinders);
 
