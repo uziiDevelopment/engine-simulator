@@ -79,6 +79,8 @@ pub fn preset() -> EngineConfig {
         // ── Dynamics — scaled for a 16-cylinder, 8.0L quad-turbo monster ─────
         flywheel_inertia: 0.55,     // lighter than before — Bugatti uses a dual-mass
         clutch_max_torque: 1600.0,
+        clutch_thermal_mass: 5000.0,
+        clutch_cooling_coeff: 2.5,
         drivetrain_inertia: 0.85,
         friction_base: 30.0,        // was 40 — too high, 16 cyl but modern tolerances
         friction_viscous: 0.065,    // was 0.090 — way too viscous

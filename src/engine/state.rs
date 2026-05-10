@@ -41,6 +41,7 @@ pub struct EngineCore {
     pub omega:            f32,    // rad/s
     pub drivetrain_omega: f32,    // rad/s
     pub drivetrain_angle: f32,    // 0..2π
+    pub clutch_temp:      f32,    // K
 
     // Player inputs / setup
     pub run_state:      RunState,
@@ -154,6 +155,7 @@ impl EngineCore {
             starter_active: false,
             throttle: 0.0,
             clutch_engagement: 1.0, // Engaged by default
+            clutch_temp: 300.0,     // Ambient
             time_scale: 1.0,
             fuel: FUELS[fuel_idx.min(FUELS.len() - 1)],
             fuel_idx,
@@ -248,6 +250,7 @@ impl EngineCore {
         self.run_state = RunState::Off;
         self.starter_active = false;
         self.clutch_engagement = 1.0;
+        self.clutch_temp = 300.0;
         self.engine_seized = false;
         self.seizure_reason.clear();
         self.oil_config = OilConfig::default();

@@ -18,6 +18,8 @@ pub fn preset() -> EngineConfig {
 
         flywheel_inertia: 0.22,
         clutch_max_torque: 480.0,
+        clutch_thermal_mass: 1600.0,
+        clutch_cooling_coeff: 0.7,
         drivetrain_inertia: 0.35,
         friction_base: 14.5,
         friction_viscous: 0.052,

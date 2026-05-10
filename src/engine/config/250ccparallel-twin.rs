@@ -18,6 +18,8 @@ pub fn preset_250cc_twin() -> EngineConfig {
 
         flywheel_inertia: 0.04, // Very light flywheel for quick revving
         clutch_max_torque: 80.0,
+        clutch_thermal_mass: 400.0,
+        clutch_cooling_coeff: 0.2,
         drivetrain_inertia: 0.10,
         friction_base: 5.0,
         friction_viscous: 0.02,

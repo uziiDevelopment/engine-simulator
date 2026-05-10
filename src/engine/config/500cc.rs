@@ -19,6 +19,8 @@ pub fn preset() -> EngineConfig {
         // Scaled down, but proportionally heavier to keep a 1-cyl from stalling
         flywheel_inertia: 0.08, 
         clutch_max_torque: 100.0,
+        clutch_thermal_mass: 400.0,
+        clutch_cooling_coeff: 0.2,
         drivetrain_inertia: 0.12,
         
         // Frictions scaled down roughly to 1/4th of the 4-cylinder

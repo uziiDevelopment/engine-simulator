@@ -876,6 +876,8 @@ fn telemetry_grid(ui: &mut egui::Ui, core: &EngineCore) {
         cell(ui, "Exh. temp",  &format!("{:>5.0} K", core.exhaust_temp_smoothed));
         ui.end_row();
         cell(ui, "Clutch",     &format!("{:>3.0}%",    core.clutch_engagement * 100.0));
+        cell(ui, "Clutch Temp",&format!("{:>5.0} C",   core.clutch_temp - 273.15));
+        ui.end_row();
         cell(ui, "Drivetrain", &format!("{:>5.0} RPM", core.drivetrain_omega * 60.0 / 6.2831853));
         ui.end_row();
     });

@@ -343,31 +343,44 @@ pub fn apply_flywheel_material(
     }
 }
 
-// ──────────────── Clutch material override (metal/friction) ─────────────────
+// ──────────────── Clutch material override (thermal glow) ───────────────────
 pub fn apply_clutch_material(
+    core: Res<crate::engine::EngineCore>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     q_clutch: Query<Entity, With<super::Clutch>>,
     q_children: Query<&Children>,
     q_material: Query<&Handle<StandardMaterial>>,
-    mut done: Local<bevy::utils::HashSet<Entity>>,
 ) {
+    // Temperature-based tinting
+    let temp = core.clutch_temp;
+    let t_norm = ((temp - 300.0) / 900.0).clamp(0.0, 1.0); // 0 at 300K, 1 at 1200K
+    
+    let (base_color, emissive) = if t_norm < 0.1 {
+        (Color::srgb(0.25, 0.26, 0.28), LinearRgba::BLACK)
+    } else if t_norm < 0.5 {
+        // Heating up: grey -> dull red
+        let alpha = (t_norm - 0.1) / 0.4;
+        (
+            Color::srgb(0.25 + alpha * 0.5, 0.26 * (1.0 - alpha), 0.28 * (1.0 - alpha)),
+            LinearRgba::new(alpha * 0.5, 0.0, 0.0, 1.0)
+        )
+    } else {
+        // Glowing: red -> orange/yellow
+        let alpha = (t_norm - 0.5) / 0.5;
+        (
+            Color::srgb(0.75 + alpha * 0.2, alpha * 0.4, 0.0),
+            LinearRgba::new(0.5 + alpha * 10.0, alpha * 3.0, 0.0, 1.0)
+        )
+    };
+
     for entity in &q_clutch {
-        if done.contains(&entity) { continue; }
-        
-        let mut found = false;
         for child in q_children.iter_descendants(entity) {
             if let Ok(mat_handle) = q_material.get(child) {
                 if let Some(mat) = materials.get_mut(mat_handle) {
-                    // Clutch friction surface is usually a darker, matte grey metallic
-                    mat.base_color = Color::srgb(0.25, 0.26, 0.28);
-                    mat.metallic = 0.7;
-                    mat.perceptual_roughness = 0.55;
-                    found = true;
+                    mat.base_color = base_color;
+                    mat.emissive = emissive;
                 }
             }
-        }
-        if found {
-            done.insert(entity);
         }
     }
 }

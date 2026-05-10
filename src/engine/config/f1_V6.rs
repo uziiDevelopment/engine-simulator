@@ -28,6 +28,8 @@ pub fn preset_f1_v6() -> EngineConfig {
 
         flywheel_inertia: 0.06, // Almost nonexistent; basically just the carbon clutch basket
         clutch_max_torque: 250.0,
+        clutch_thermal_mass: 300.0,
+        clutch_cooling_coeff: 0.8,
         drivetrain_inertia: 0.08,
         friction_base: 14.0, // Tightly sprung rings, but fewer cylinders than the V8
         friction_viscous: 0.015, // Ultra-thin aerospace-grade oil running at high temps

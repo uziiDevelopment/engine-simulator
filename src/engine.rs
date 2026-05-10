@@ -429,11 +429,23 @@ pub fn engine_step(
 
         // ── Clutch & Drivetrain Physics ──────────────────────────────────
         let slip = core.omega - core.drivetrain_omega;
-        // Simple friction model: torque capacity scales with engagement.
-        let max_clutch_torque = core.clutch_engagement * core.config.clutch_max_torque;
-        // The clutch tries to zero the slip.  A high gain (50.0) makes it feel "bitey"
-        // and keeps the two shafts synced when fully engaged.
+
+        // Heat-based fade: capacity drops above ~500K (227°C)
+        let fade_factor = ((1000.0 - core.clutch_temp) / 500.0).clamp(0.0, 1.0);
+
+        // Torque capacity scales with engagement and thermal fade
+        let max_clutch_torque = core.clutch_engagement * core.config.clutch_max_torque * fade_factor;
+        
+        // The clutch tries to zero the slip.
         let clutch_torque = (slip * 50.0).clamp(-max_clutch_torque, max_clutch_torque);
+
+        // Heat generation (P = T * Δω) and cooling (Newton's law)
+        let heat_generated_w = (clutch_torque * slip).abs();
+        let cooling_w = (core.clutch_temp - 300.0) * core.config.clutch_cooling_coeff;
+        
+        let net_heat_w = heat_generated_w - cooling_w;
+        core.clutch_temp += (net_heat_w / core.config.clutch_thermal_mass) * dt;
+        core.clutch_temp = core.clutch_temp.max(300.0);
 
         // Engine loses torque to the clutch
         tau_total -= clutch_torque;

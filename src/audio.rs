@@ -35,7 +35,7 @@ impl Plugin for EngineAudioPlugin {
 
         let shared_buffer = Arc::new(Mutex::new(Vec::<AudioSample>::with_capacity(8192)));
         let ir_update     = Arc::new(Mutex::new(None::<Vec<f32>>));
-        let ir_blend      = Arc::new(Mutex::new(0.5_f32));
+        let ir_blend      = Arc::new(Mutex::new(0.25_f32));
 
         let initial_ir = load_ir_wav(0);
         let audio_source = EngineAudioSource::new(
@@ -51,7 +51,7 @@ impl Plugin for EngineAudioPlugin {
             _stream_handle: stream_handle,
         });
         app.insert_resource(AudioTx { buffer: shared_buffer, ir_update, ir_blend });
-        app.insert_resource(AudioConfig { ir_index: 0, ir_blend: 0.5 });
+        app.insert_resource(AudioConfig { ir_index: 0, ir_blend: 0.25 });
     }
 }
 
@@ -89,9 +89,12 @@ pub fn load_ir_wav(index: usize) -> Vec<f32> {
         .map(|i| i + 1)
         .unwrap_or(0);
     let mut ir = mono[..trim.min(mono.len())].to_vec();
-    let peak = ir.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
-    if peak > 0.0 {
-        ir.iter_mut().for_each(|s| *s /= peak);
+    // Cap length so convolution stays cheap
+    ir.truncate(4096);
+    // Normalise by RMS energy so convolution preserves signal level
+    let energy: f32 = ir.iter().map(|s| s * s).sum::<f32>().sqrt();
+    if energy > 0.0 {
+        ir.iter_mut().for_each(|s| *s /= energy);
     }
     if ir.is_empty() { ir.push(1.0); }
     ir
@@ -301,14 +304,12 @@ impl Iterator for EngineAudioSource {
         let raw_exh = (exh_pa - 101_325.0) * 0.00005;
 
         // ── Stage 2: DC block ─────────────────────────────────────────────────
-        let prev_for_deriv = self.prev_raw;
         let r = 0.998;
         self.dc_blocked = raw_exh - self.prev_raw + r * self.dc_blocked;
         self.prev_raw   = raw_exh;
 
-        // ── Stage 3: Pressure-derivative mix (exhaust valve "pop") ───────────
-        let d_exh = (raw_exh - prev_for_deriv) * sample_rate;
-        let mixed = 0.95 * self.dc_blocked + 0.05 * d_exh;
+        // ── Stage 3: pass through (DC block already emphasises transitions) ──
+        let mixed = self.dc_blocked;
 
         // ── Stage 4: Biquad LPF at 3500 Hz (replaces 430 Hz EMA pair) ────────
         let biquad_out = self.lpf_main.process(mixed);
