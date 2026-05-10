@@ -46,6 +46,9 @@ pub fn preset() -> EngineConfig {
         intake_valve_diameter: 0.037,
         exhaust_valve_diameter: 0.032,
 
+        intake_runner_length: 0.28,
+        intake_runner_area: 1.55e-3,
+
         cylinder_spacing: 0.11,
         materials: MaterialsConfig::default_for_bore(0.092),
     }

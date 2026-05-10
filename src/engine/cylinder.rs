@@ -73,6 +73,11 @@ pub struct CylinderState {
     pub last_friction_torque: f32,
     /// Peak axial force the rod has seen (N) — telemetry.
     pub last_rod_stress:  f32,
+
+    /// Bulk gas velocity (m/s) of the intake-runner air slug at the valve face.
+    /// Positive = toward cylinder. State variable for the intake-port inertance
+    /// model that produces the VE-vs-RPM curve shape (ram tuning + high-RPM rolloff).
+    pub intake_slug_velocity: f32,
 }
 
 impl CylinderState {
@@ -108,6 +113,7 @@ impl CylinderState {
             block_temp: T_ATM, piston_temp: T_ATM,
             last_friction_heat: 0.0, last_friction_torque: 0.0,
             last_rod_stress: 0.0,
+            intake_slug_velocity: 0.0,
         }
     }
 
@@ -140,6 +146,7 @@ impl CylinderState {
             last_friction_heat: 0.0,
             last_friction_torque: 0.0,
             last_rod_stress: 0.0,
+            intake_slug_velocity: 0.0,
         }
     }
 
@@ -172,6 +179,7 @@ impl CylinderState {
             last_friction_heat: 0.0,
             last_friction_torque: 0.0,
             last_rod_stress: 0.0,
+            intake_slug_velocity: 0.0,
         }
     }
 }
@@ -434,12 +442,51 @@ pub fn step_cylinder_cfg(
     // have γ ~1.28 vs. air's 1.40, changing choked mass flux by ~8%).
     let gamma_cyl = gamma_mix(cyl.air_frac, cyl.fuel_frac, cyl.burned_frac);
 
-    let m_dot_in = if a_intake > 0.0 {
-        flow_between(
-            intake.pressure(), intake.temperature,
-            p_old, cyl.temperature,
-            a_intake, GAMMA_AIR, R_AIR,
-        )
+    // Intake: 1-D inertial model of the runner air slug (Newton's 2nd law on
+    // a gas column of length L_r and area A_r between manifold and valve face).
+    //
+    //   ρ·L·dv/dt = (P_man − P_cyl) − ρ·(A_r/Cd_A)²·|v|·v / 2
+    //
+    // ⇒ steady state matches quasi-static Bernoulli orifice flow, but the slug
+    // can't change velocity instantly: that lag is the ram-tuning mechanism that
+    // gives a real volumetric-efficiency curve (low-RPM ~OK, mid-RPM peak with
+    // momentum overshoot, high-RPM rolloff because slug never accelerates fully).
+    let p_man = intake.pressure();
+    let rho_man = (p_man / (R_AIR * intake.temperature.max(60.0))).max(1.0e-3);
+    let a_runner = cfg.intake_runner_area.max(1.0e-6);
+    let l_runner = cfg.intake_runner_length.max(1.0e-3);
+
+    let v_slug = cyl.intake_slug_velocity;
+    if a_intake > 1.0e-7 {
+        // Bernoulli loss coefficient — uses the valve's instantaneous effective area.
+        // Treat the loss as a dissipation: it can't reverse the slug's direction in
+        // a single substep, so clamp loss_accel to |v|/dt for forward-Euler stability
+        // when the valve is at low lift (Cd·A → 0 makes the raw expression huge).
+        let cd_a = a_intake;
+        let loss_accel_raw = (a_runner * a_runner) * v_slug.abs() * v_slug
+            / (2.0 * l_runner * cd_a * cd_a).max(1.0e-9);
+        let loss_cap = v_slug.abs() / dt.max(1.0e-9);
+        let loss_accel = loss_accel_raw.clamp(-loss_cap, loss_cap);
+        let drive_accel = (p_man - p_old) / (rho_man * l_runner);
+        let dv = drive_accel - loss_accel;
+        cyl.intake_slug_velocity = v_slug + dv * dt;
+    } else {
+        // Valve closed: the slug bounces against the closed port, kinetic
+        // energy bleeds off into the manifold via the open end.  First-order
+        // decay with ~15 ms time constant captures this without a separate
+        // runner-capacitance state.
+        cyl.intake_slug_velocity = v_slug * (-65.0 * dt).exp();
+    }
+
+    let m_dot_in = if a_intake > 1.0e-7 {
+        // Signed mass flow: + into cylinder, − backflow into manifold.
+        let rho_used = if cyl.intake_slug_velocity >= 0.0 {
+            rho_man
+        } else {
+            // Backflow carries cylinder gas back to manifold.
+            (p_old / (R_AIR * cyl.temperature.max(60.0))).max(1.0e-3)
+        };
+        rho_used * a_runner * cyl.intake_slug_velocity
     } else { 0.0 };
 
     let m_dot_out = if a_exhaust > 0.0 {
@@ -492,7 +539,18 @@ pub fn step_cylinder_cfg(
 
     let mut heat_release = 0.0_f32;
     if cyl.burning {
-        let burn_dur = fuel.burn_duration_deg.to_radians();
+        // Burn duration stretches at low piston speed.  Turbulent flame speed
+        // scales with charge motion (∝ mean piston speed); when piston speed
+        // drops below the well-developed-turbulence threshold (~8 m/s), the
+        // laminar floor dominates, so the burn takes more crank degrees and
+        // peak heat release ends up late ATDC — which is precisely why NA
+        // engines lose IMEP at low RPM and peak torque sits in the mid-range
+        // rather than at idle.  Clamped at 1.8× so cranking/idle still light off.
+        let mean_piston_speed = (omega.abs() * cfg.stroke) / PI;
+        let burn_stretch = (8.0_f32 / mean_piston_speed.max(1.5))
+            .sqrt()
+            .clamp(1.0, 1.8);
+        let burn_dur = (fuel.burn_duration_deg * burn_stretch).to_radians();
         let mut delta = phase_4s - cyl.crank_at_spark;
         if delta < 0.0 { delta += 4.0 * PI; }
         // Bug 3 fix: use fuel-specific Wiebe parameters (diesel: m=0.3 for

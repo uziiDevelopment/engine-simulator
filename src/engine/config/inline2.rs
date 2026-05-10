@@ -48,6 +48,10 @@ pub fn preset_250cc_twin() -> EngineConfig {
         intake_valve_diameter: 0.024,
         exhaust_valve_diameter: 0.021,
 
+        // Short stacks tuned for high-RPM sportbike twin
+        intake_runner_length: 0.18,
+        intake_runner_area: 6.5e-4,
+
         cylinder_spacing: 0.075,
         materials: MaterialsConfig::default_for_bore(0.062),
     }

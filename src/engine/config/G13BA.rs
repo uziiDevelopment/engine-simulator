@@ -56,6 +56,10 @@ pub fn preset_suzuki_swift_1_3() -> EngineConfig {
         intake_valve_diameter: 0.036,  // 36.0 mm 
         exhaust_valve_diameter: 0.030, // 30.0 mm
 
+        // Long-ish economy intake manifold tuned around 3500 RPM
+        intake_runner_length: 0.42,
+        intake_runner_area: 1.20e-3,
+
         cylinder_spacing: 0.084, // 84mm bore spacing used on Suzuki G-series blocks
         materials: MaterialsConfig::default_for_bore(0.074),
     }

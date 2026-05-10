@@ -339,12 +339,7 @@ impl Iterator for EngineAudioSource {
         let rpm_factor = (rpm / 4000.0).powf(0.8).clamp(0.0, 1.0);
         let mut signal = after_conv * rpm_factor;
 
-        // ── Stage 7: Air/induction noise texture ─────────────────────────────
-        self.noise_seed = self.noise_seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let noise_raw = self.noise_seed as f32 / u32::MAX as f32 * 2.0 - 1.0;
-        let noise_bp  = self.noise_bp.process(noise_raw);
-        let noise     = self.noise_lp.process(noise_bp);
-        signal += 0.07 * rpm_factor * noise;
+        // Stage 7: noise removed — physics provides sufficient texture
 
         // ── Stage 8: Target-based leveler ────────────────────────────────────
         self.peak_env = 0.9999 * self.peak_env + 0.0001 * signal.abs();

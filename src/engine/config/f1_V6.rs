@@ -59,6 +59,10 @@ pub fn preset_f1_v6() -> EngineConfig {
         intake_valve_diameter: 0.034, // Squeezed tightly into the 80mm bore
         exhaust_valve_diameter: 0.029,
 
+        // Very short, large-area trumpets tuned for the 10000–14000 RPM band.
+        intake_runner_length: 0.12,
+        intake_runner_area: 1.55e-3,
+
         cylinder_spacing: 0.095, // Highly compact block
         materials: MaterialsConfig::default_for_bore(0.080),
     }

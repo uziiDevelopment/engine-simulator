@@ -141,6 +141,14 @@ pub struct EngineConfig {
     pub intake_valve_diameter: f32, // m
     pub exhaust_valve_diameter: f32,// m
 
+    // ── Intake runner (per-cylinder air-column inertia, drives VE shape) ─────
+    /// Length of the intake runner from plenum to valve face (m).
+    /// Longer = tuned for lower RPM, shorter = tuned for higher RPM.
+    pub intake_runner_length: f32,
+    /// Cross-sectional area of the intake runner (m²).
+    /// Sets the mass of the gas slug that has to be accelerated each intake event.
+    pub intake_runner_area: f32,
+
     // ── Visual layout ────────────────────────────────────────────────────────
     pub cylinder_spacing: f32,      // m between cylinder centres (for 3D)
 
@@ -451,6 +459,9 @@ pub fn build_engine(
         exhaust_peak_lift: 0.010,
         intake_valve_diameter: 0.034,
         exhaust_valve_diameter: 0.030,
+
+        intake_runner_length: 0.35,
+        intake_runner_area: PI * 0.034 * 0.034 * 0.25 * 1.20,
 
         cylinder_spacing: 0.10,
         materials: MaterialsConfig::default_for_bore(bore),
