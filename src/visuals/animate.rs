@@ -289,3 +289,32 @@ fn damage_value(core: &EngineCore, source: DamageSource) -> f32 {
 }
 
 
+
+// ──────────────── Flywheel material override (metal) ────────────────────────
+pub fn apply_flywheel_material(
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    q_flywheel: Query<Entity, With<super::Flywheel>>,
+    q_children: Query<&Children>,
+    q_material: Query<&Handle<StandardMaterial>>,
+    mut done: Local<bevy::utils::HashSet<Entity>>,
+) {
+    for entity in &q_flywheel {
+        if done.contains(&entity) { continue; }
+        
+        // Traverse children to find materials and override them
+        let mut found = false;
+        for child in q_children.iter_descendants(entity) {
+            if let Ok(mat_handle) = q_material.get(child) {
+                if let Some(mat) = materials.get_mut(mat_handle) {
+                    mat.base_color = Color::srgb(0.7, 0.72, 0.75);
+                    mat.metallic = 1.0;
+                    mat.perceptual_roughness = 0.25;
+                    found = true;
+                }
+            }
+        }
+        if found {
+            done.insert(entity);
+        }
+    }
+}

@@ -8,7 +8,7 @@ use crate::engine::{EngineCore, VIS_SCALE};
 
 use super::{
     ConRod, Crankshaft, CylinderGasViz, DamageSource, DamageVisual, EngineVisual,
-    ManifoldKind, ManifoldViz, Piston, Valve, ValveKind,
+    Flywheel, ManifoldKind, ManifoldViz, Piston, Valve, ValveKind,
 };
 
 /// Spawns static scene elements (floor, lights) that don't depend on engine config.
@@ -198,11 +198,19 @@ commands.spawn((
         ..default()
     })).set_parent(crank_entity);
 
-    let flywheel = commands.spawn((EngineVisual, Name::new("Flywheel"), PbrBundle {
-        mesh: flywheel_mesh.clone(), material: flywheel_mat.clone(),
-        transform: Transform::from_xyz(rear_x + 0.04 * s, 0.0, 0.0).with_rotation(crank_axis_rot),
-        ..default()
-    })).set_parent(crank_entity).id();
+    let flywheel_scene = asset_server.load("engine/crank/flywheel.glb#Scene0");
+    let flywheel = commands.spawn((
+        EngineVisual,
+        Flywheel,
+        Name::new("Flywheel"),
+        SceneBundle {
+            scene: flywheel_scene,
+            transform: Transform::from_xyz(rear_x + 0.04 * s, 0.0, 0.0)
+                .with_rotation(Quat::from_rotation_y(-std::f32::consts::PI / 2.0))
+                .with_scale(Vec3::splat(0.01)),
+            ..default()
+        },
+    )).set_parent(crank_entity).id();
 
     // Removed yellow timing mark as it looked glitchy/unintended
 

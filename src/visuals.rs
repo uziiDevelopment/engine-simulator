@@ -31,6 +31,7 @@ impl Plugin for VisualsPlugin {
                     animate::animate_cylinder_gas,
                     animate::animate_manifolds,
                     animate::animate_damage,
+                    animate::apply_flywheel_material,
                     sync_damage_visual_materials,
                     discover_rod_attachments,
                 )
@@ -74,6 +75,7 @@ fn rebuild_engine_visuals(
 pub struct EngineVisual;
 
 #[derive(Component)] pub struct Crankshaft;
+#[derive(Component)] pub struct Flywheel;
 
 #[derive(Component)]
 pub struct Piston {
