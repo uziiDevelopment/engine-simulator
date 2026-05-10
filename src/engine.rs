@@ -84,6 +84,11 @@ impl Plugin for EnginePlugin {
 /// own combustion, the starter is disconnected automatically.
 fn engine_input(keys: Res<ButtonInput<KeyCode>>, mut core: ResMut<EngineCore>) {
     core.starter_active = keys.pressed(KeyCode::KeyE) && core.run_state != RunState::Running;
+
+    // Holding Shift disengages the clutch immediately
+    if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+        core.clutch_engagement = 0.0;
+    }
 }
 
 /// Step the entire engine forward by one frame, with `time_scale` applied for slow-mo.
@@ -108,7 +113,7 @@ pub fn engine_step(
     let mut total_work = 0.0_f32;
     let mut last_friction_heat_w = 0.0_f32;
 
-    let mut audio_buffer = Vec::with_capacity(substeps);
+    let mut audio_buffer = Vec::<crate::audio::AudioSample>::with_capacity(substeps);
 
     for _ in 0..substeps {
         let rpm = core.rpm();
@@ -422,12 +427,33 @@ pub fn engine_step(
         // The pure engine output torque (flywheel torque)
         let engine_flywheel_torque = tau_total;
 
+        // ── Clutch & Drivetrain Physics ──────────────────────────────────
+        let slip = core.omega - core.drivetrain_omega;
+        // Simple friction model: torque capacity scales with engagement.
+        let max_clutch_torque = core.clutch_engagement * core.config.clutch_max_torque;
+        // The clutch tries to zero the slip.  A high gain (50.0) makes it feel "bitey"
+        // and keeps the two shafts synced when fully engaged.
+        let clutch_torque = (slip * 50.0).clamp(-max_clutch_torque, max_clutch_torque);
+
+        // Engine loses torque to the clutch
+        tau_total -= clutch_torque;
+
+        // Drivetrain gains torque from the clutch, minus its own friction/load
+        let mut drivetrain_tau = clutch_torque;
+        drivetrain_tau -= core.drivetrain_omega * 0.05; // light viscous drag
+
         // ── Dyno absorption brake ────────────────────────────────────────
         if dyno.active {
-            // The PID applies positive torque to brake the engine.
-            // Since engine spins with omega > 0, we subtract it.
-            tau_total -= dyno.absorption_torque;
+            // Dyno now brakes the drivetrain side (simulating a chassis dyno)
+            drivetrain_tau -= dyno.absorption_torque;
         }
+
+        let drivetrain_accel = drivetrain_tau / core.config.drivetrain_inertia;
+        core.drivetrain_omega += drivetrain_accel * dt;
+        if core.drivetrain_omega < 0.0 { core.drivetrain_omega = 0.0; }
+
+        let d_dt_angle = core.drivetrain_omega * dt;
+        core.drivetrain_angle = (core.drivetrain_angle + d_dt_angle).rem_euclid(TAU);
 
         // ── Integrate the only true degree of freedom: the crank ─────────
         core.omega += tau_total / core.config.flywheel_inertia * dt;
@@ -441,15 +467,15 @@ pub fn engine_step(
         torque_sum += engine_flywheel_torque;
         total_work += tau_total * core.omega * dt;
 
-        // Push audio sample — exhaust pressure + bearing knock impulse spikes.
+        // Push audio sample — raw pressures + RPM + bearing knock impulse.
         if core.audio_enabled {
-            let exhaust_pressure = core.exhaust.pressure();
-            let base_sample = (exhaust_pressure - 101325.0) * 0.00005;
-            // Knock is kept separate so the audio source can inject it after the
-            // LPF/AGC chain; mixing it into the pressure signal would cause the
-            // low-pass filter to smear it into inaudible mush.
-            let knock_sample = substep_knock.clamp(0.0, 1.0);
-            audio_buffer.push((dt, base_sample, knock_sample));
+            audio_buffer.push(crate::audio::AudioSample {
+                dt,
+                exhaust_pressure: core.exhaust.pressure(),
+                intake_pressure:  core.intake.pressure(),
+                knock:            substep_knock.clamp(0.0, 1.0),
+                rpm:              core.rpm(),
+            });
         }
     }
 

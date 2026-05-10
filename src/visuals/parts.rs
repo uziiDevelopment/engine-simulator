@@ -7,7 +7,7 @@ use std::f32::consts::PI;
 use crate::engine::{EngineCore, VIS_SCALE};
 
 use super::{
-    ConRod, Crankshaft, CylinderGasViz, DamageSource, DamageVisual, EngineVisual,
+    Clutch, ConRod, Crankshaft, CylinderGasViz, DamageSource, DamageVisual, EngineVisual,
     Flywheel, ManifoldKind, ManifoldViz, Piston, Valve, ValveKind,
 };
 
@@ -210,6 +210,20 @@ commands.spawn((
             ..default()
         },
     )).set_parent(crank_entity).id();
+    
+    let clutch_scene = asset_server.load("engine/crank/clutch_plate.glb#Scene0");
+    commands.spawn((
+        EngineVisual,
+        Clutch,
+        Name::new("Clutch Plate"),
+        SceneBundle {
+            scene: clutch_scene,
+            transform: Transform::from_xyz(rear_x + 0.08 * s, 0.0, 0.0)
+                .with_rotation(Quat::from_rotation_y(-std::f32::consts::PI / 2.0))
+                .with_scale(Vec3::splat(0.01)),
+            ..default()
+        },
+    )).set_parent(crank_entity);
 
     // Removed yellow timing mark as it looked glitchy/unintended
 

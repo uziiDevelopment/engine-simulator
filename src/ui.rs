@@ -21,10 +21,12 @@ impl Plugin for UiPlugin {
 }
 
 fn ui_panel(
-    mut ctx: EguiContexts, 
+    mut ctx: EguiContexts,
     mut core: ResMut<EngineCore>,
     mut dyno: ResMut<DynoState>,
     mut visual_query: Query<(Entity, &Name, Option<&Children>, Option<&Parent>, &mut Visibility), With<EngineVisual>>,
+    mut audio_config: ResMut<crate::audio::AudioConfig>,
+    audio_tx: Option<Res<crate::audio::AudioTx>>,
 ) {
     let rpm = core.rpm();
     let state_text = match core.run_state {
@@ -121,6 +123,15 @@ fn ui_panel(
                         .custom_formatter(|v, _| format!("{:>3.0}%", v * 100.0))
                         .custom_parser(|s| s.trim_end_matches('%').parse::<f64>().ok().map(|v| v / 100.0)),
                 );
+                
+                // ── Clutch ───────────────────────────────────────────────────
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Clutch (Shift to disengage)").strong());
+                ui.add(
+                    egui::Slider::new(&mut core.clutch_engagement, 0.0..=1.0)
+                        .show_value(true)
+                        .custom_formatter(|v, _| format!("{:>3.0}%", v * 100.0)),
+                );
 
                 // ── Time scale ───────────────────────────────────────────────
                 ui.add_space(6.0);
@@ -148,6 +159,45 @@ fn ui_panel(
 
                 // ── Audio ────────────────────────────────────────────────────
                 ui.checkbox(&mut core.audio_enabled, "Audio Simulation");
+
+                if core.audio_enabled {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("Exhaust IR Profile").small().strong());
+                    let ir_label = format!("smooth_{:02}", audio_config.ir_index + 1);
+                    let mut ir_idx = audio_config.ir_index;
+                    egui::ComboBox::from_id_salt("ir_combo")
+                        .width(ui.available_width() - 8.0)
+                        .selected_text(&ir_label)
+                        .show_ui(ui, |ui| {
+                            for i in 0..49_usize {
+                                ui.selectable_value(&mut ir_idx, i, format!("smooth_{:02}", i + 1));
+                            }
+                        });
+                    if ir_idx != audio_config.ir_index {
+                        audio_config.ir_index = ir_idx;
+                        if let Some(ref tx) = audio_tx {
+                            let new_ir = crate::audio::load_ir_wav(ir_idx);
+                            if let Ok(mut upd) = tx.ir_update.try_lock() {
+                                *upd = Some(new_ir);
+                            }
+                        }
+                    }
+
+                    let blend_changed = ui.add(
+                        egui::Slider::new(&mut audio_config.ir_blend, 0.0..=1.0)
+                            .text("IR Blend")
+                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                    ).changed();
+                    if blend_changed {
+                        if let Some(ref tx) = audio_tx {
+                            if let Ok(mut blend) = tx.ir_blend.try_lock() {
+                                *blend = audio_config.ir_blend;
+                            }
+                        }
+                    }
+                    ui.add_space(4.0);
+                }
+
                 ui.checkbox(&mut core.particles_enabled, "Gas Flow Particles");
                 ui.checkbox(&mut core.damage_view, "Damage View (FEA gradient)");
 
@@ -457,6 +507,7 @@ fn ui_panel(
                 // ── Controls + spec ──────────────────────────────────────────
                 ui.label(egui::RichText::new("Controls").strong());
                 ui.label("E — starter motor");
+                ui.label("Shift — disengage clutch");
                 ui.label("RMB — orbit");
                 ui.label("MMB — pan");
                 ui.label("Scroll — zoom");
@@ -823,6 +874,9 @@ fn telemetry_grid(ui: &mut egui::Ui, core: &EngineCore) {
         ui.end_row();
         cell(ui, "AFR",        &format!("{:>5.2}", afr));
         cell(ui, "Exh. temp",  &format!("{:>5.0} K", core.exhaust_temp_smoothed));
+        ui.end_row();
+        cell(ui, "Clutch",     &format!("{:>3.0}%",    core.clutch_engagement * 100.0));
+        cell(ui, "Drivetrain", &format!("{:>5.0} RPM", core.drivetrain_omega * 60.0 / 6.2831853));
         ui.end_row();
     });
 }

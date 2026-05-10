@@ -16,6 +16,8 @@ pub fn preset() -> EngineConfig {
         firing_offsets_deg: vec![90.0, 450.0, 330.0, 690.0, 210.0, 570.0],
 
         flywheel_inertia: 0.14,
+        clutch_max_torque: 450.0,
+        drivetrain_inertia: 0.28,
         friction_base: 16.0,
         friction_viscous: 0.050,
         friction_windage: 0.00015,

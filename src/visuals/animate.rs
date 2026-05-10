@@ -19,6 +19,30 @@ pub fn animate_crank(core: Res<EngineCore>, mut q: Query<&mut Transform, With<Cr
     }
 }
 
+pub fn animate_drivetrain(core: Res<EngineCore>, mut q: Query<&mut Transform, With<super::Clutch>>) {
+    let base_rot = Quat::from_rotation_y(-std::f32::consts::PI / 2.0);
+    
+    // Recalculate rear_x relative to the crankshaft origin
+    let positions = core.config.crank_positions();
+    let spacing = core.config.cylinder_spacing * VIS_SCALE;
+    let center_x = (positions as f32 - 1.0) * 0.5 * spacing;
+    let rear_x = center_x + spacing * 0.5;
+    
+    // Clutch throw: move 50mm away when fully disengaged
+    let throw = (1.0 - core.clutch_engagement) * 0.050;
+
+    for mut t in &mut q {
+        // Since it's parented to the crankshaft, we must subtract the crank's rotation
+        // to make it rotate at the drivetrain's speed in world space.
+        let relative_angle = core.drivetrain_angle - core.angle;
+        t.rotation = Quat::from_rotation_x(relative_angle) * base_rot;
+        
+        // Local position relative to crankshaft origin.
+        // Flywheel is at (rear_x, 0, 0), so we place clutch just behind it.
+        t.translation = Vec3::new(rear_x + 0.025 * VIS_SCALE + throw, 0.0, 0.0);
+    }
+}
+
 // ─────────────────────────────────── Pistons ────────────────────────────────
 pub fn animate_pistons(core: Res<EngineCore>, mut q: Query<(&Piston, &mut Transform)>) {
     for (p, mut t) in &mut q {
@@ -309,6 +333,35 @@ pub fn apply_flywheel_material(
                     mat.base_color = Color::srgb(0.7, 0.72, 0.75);
                     mat.metallic = 1.0;
                     mat.perceptual_roughness = 0.25;
+                    found = true;
+                }
+            }
+        }
+        if found {
+            done.insert(entity);
+        }
+    }
+}
+
+// ──────────────── Clutch material override (metal/friction) ─────────────────
+pub fn apply_clutch_material(
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    q_clutch: Query<Entity, With<super::Clutch>>,
+    q_children: Query<&Children>,
+    q_material: Query<&Handle<StandardMaterial>>,
+    mut done: Local<bevy::utils::HashSet<Entity>>,
+) {
+    for entity in &q_clutch {
+        if done.contains(&entity) { continue; }
+        
+        let mut found = false;
+        for child in q_children.iter_descendants(entity) {
+            if let Ok(mat_handle) = q_material.get(child) {
+                if let Some(mat) = materials.get_mut(mat_handle) {
+                    // Clutch friction surface is usually a darker, matte grey metallic
+                    mat.base_color = Color::srgb(0.25, 0.26, 0.28);
+                    mat.metallic = 0.7;
+                    mat.perceptual_roughness = 0.55;
                     found = true;
                 }
             }

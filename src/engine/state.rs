@@ -39,11 +39,14 @@ pub struct EngineCore {
     pub angle:            f32,    // 0..2π
     pub fourstroke_angle: f32,    // 0..4π
     pub omega:            f32,    // rad/s
+    pub drivetrain_omega: f32,    // rad/s
+    pub drivetrain_angle: f32,    // 0..2π
 
     // Player inputs / setup
     pub run_state:      RunState,
     pub starter_active: bool,
     pub throttle:       f32,      // 0..=1
+    pub clutch_engagement: f32,   // 0..=1 (1 = fully clamped)
     pub time_scale:     f32,      // 1.0 = real-time, < 1 = slow-mo
     pub fuel:           Fuel,
     pub fuel_idx:       usize,
@@ -145,9 +148,12 @@ impl EngineCore {
             angle: 0.0,
             fourstroke_angle: 0.0,
             omega: 0.0,
+            drivetrain_omega: 0.0,
+            drivetrain_angle: 0.0,
             run_state: RunState::Off,
             starter_active: false,
             throttle: 0.0,
+            clutch_engagement: 1.0, // Engaged by default
             time_scale: 1.0,
             fuel: FUELS[fuel_idx.min(FUELS.len() - 1)],
             fuel_idx,
@@ -237,8 +243,11 @@ impl EngineCore {
         self.angle = 0.0;
         self.fourstroke_angle = 0.0;
         self.omega = 0.0;
+        self.drivetrain_omega = 0.0;
+        self.drivetrain_angle = 0.0;
         self.run_state = RunState::Off;
         self.starter_active = false;
+        self.clutch_engagement = 1.0;
         self.engine_seized = false;
         self.seizure_reason.clear();
         self.oil_config = OilConfig::default();

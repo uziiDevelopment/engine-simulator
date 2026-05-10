@@ -27,6 +27,8 @@ pub fn preset_f1_v6() -> EngineConfig {
         firing_offsets_deg: vec![45.0, 285.0, 525.0, 195.0, 435.0, 675.0],
 
         flywheel_inertia: 0.06, // Almost nonexistent; basically just the carbon clutch basket
+        clutch_max_torque: 250.0,
+        drivetrain_inertia: 0.08,
         friction_base: 14.0, // Tightly sprung rings, but fewer cylinders than the V8
         friction_viscous: 0.015, // Ultra-thin aerospace-grade oil running at high temps
         friction_windage: 0.00012, // High RPM windage, mitigated by aggressive crankcase vacuum scavenging

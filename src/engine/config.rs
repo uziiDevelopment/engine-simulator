@@ -104,6 +104,10 @@ pub struct EngineConfig {
 
     // ── Dynamics ─────────────────────────────────────────────────────────────
     pub flywheel_inertia: f32,      // kg·m²
+    pub clutch_max_torque: f32,     // Nm
+    pub clutch_thermal_mass: f32,   // J/K
+    pub clutch_cooling_coeff: f32,  // W/K
+    pub drivetrain_inertia: f32,    // kg·m²
     pub friction_base: f32,         // Nm — Coulomb friction floor
     pub friction_viscous: f32,      // Nm·s/rad
     pub friction_windage: f32,      // Nm·s²/rad²
@@ -416,6 +420,10 @@ pub fn build_engine(
         firing_offsets_deg,
 
         flywheel_inertia: 0.18 * scale.sqrt(),
+        clutch_max_torque: 350.0 * scale,
+        clutch_thermal_mass: 1200.0 * scale,
+        clutch_cooling_coeff: 0.5 * scale,
+        drivetrain_inertia: 0.25 * scale,
         friction_base: 12.0 * scale,
         friction_viscous: 0.045 * scale,
         friction_windage: 0.00012 * scale,
