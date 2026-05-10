@@ -67,6 +67,10 @@ pub struct OilConfig {
     pub min_pickup_mass: f32,
     /// Combined oil-pan dissipation coefficient (W/K).  Newton cooling to ambient.
     pub pan_dissipation: f32,
+    /// External oil cooler dissipation coefficient (W/K).
+    pub cooler_dissipation: f32,
+    /// Is the electric cooling fan running?
+    pub fan_active: bool,
     /// Pressure (Pa) above which the film is considered fully hydrodynamic.
     pub hydrodynamic_pressure: f32,
     /// Current oil grade index into `OIL_GRADES`.
@@ -94,6 +98,8 @@ impl Default for OilConfig {
             relief_pressure: 4.0e5,
             min_pickup_mass: 0.4,
             pan_dissipation: 18.0,
+            cooler_dissipation: 150.0,
+            fan_active: false,
             hydrodynamic_pressure: 2.0e5,
             grade_idx: 1,
             custom_grade: false,
@@ -162,9 +168,9 @@ impl OilState {
         if !self.has_pickup(cfg) {
             return 0.0;
         }
-        // At extreme temperatures (e.g., > 140°C / 413 K), oil film strength begins to collapse.
-        // By 160°C (433 K), it provides almost no protection regardless of pressure.
-        let thermal_breakdown = (1.0 - (self.temperature - 413.0) / 20.0).clamp(0.0, 1.0);
+        // At extreme temperatures (e.g., > 155°C / 428 K), oil film strength begins to collapse.
+        // By 180°C (453 K), it provides almost no protection regardless of pressure.
+        let thermal_breakdown = (1.0 - (self.temperature - 428.0) / 25.0).clamp(0.0, 1.0);
 
         let residual = 0.45;
         let active = (self.pressure / cfg.hydrodynamic_pressure).clamp(0.0, 1.0);
@@ -206,12 +212,24 @@ impl OilState {
             self.pressure *= (1.0 - 20.0 * dt).max(0.0);
         }
 
-        // ── Thermal balance ────────────────────────────────────────────────
-        // Specific heat of oil ≈ 2000 J/(kg·K).
         const C_OIL: f32 = 2000.0;
         let mass_eff = self.mass.max(0.05);
         let q_in = friction_heat_w + cylinder_heat_w;
-        let q_out = cfg.pan_dissipation * (self.temperature - T_ATM);
+
+        // Oil Cooling System: 
+        // 1. Pan dissipation (always active)
+        // 2. Oil Cooler (regulated by thermostat)
+        let q_pan = cfg.pan_dissipation * (self.temperature - T_ATM);
+        
+        // Thermostat opens at ~80°C (353 K)
+        let therm_open = ((self.temperature - 353.0) / 10.0).clamp(0.0, 1.0);
+        let mut cooler_eff = cfg.cooler_dissipation * therm_open;
+        if cfg.fan_active {
+            cooler_eff *= 3.0; // Cooling fan adds significant airflow
+        }
+        let q_cooler = cooler_eff * (self.temperature - T_ATM);
+
+        let q_out = q_pan + q_cooler;
         let dT = (q_in - q_out) * dt / (mass_eff * C_OIL);
         self.temperature = (self.temperature + dT).clamp(T_ATM - 5.0, 600.0);
 

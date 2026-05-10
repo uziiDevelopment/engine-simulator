@@ -65,6 +65,8 @@ pub struct EngineCore {
     /// catastrophic-failure threshold (rod snap, wall worn out, melted piston,
     /// oil starvation).  Engine refuses to spin while set.
     pub engine_seized: bool,
+    /// Human-readable reason for the seizure.
+    pub seizure_reason: String,
 
     /// Multiplier on the Archard wear constant so destruction is observable
     /// inside a play session.  1.0 = lab-realistic (basically invisible);
@@ -149,6 +151,7 @@ impl EngineCore {
             oil_config,
             oil,
             engine_seized: false,
+            seizure_reason: String::new(),
             wear_time_scale: 1_000.0,
 
             main_bearings,
@@ -224,6 +227,7 @@ impl EngineCore {
         self.run_state = RunState::Off;
         self.starter_active = false;
         self.engine_seized = false;
+        self.seizure_reason.clear();
         self.oil_config = OilConfig::default();
         self.oil = OilState::fresh(&self.oil_config);
 

@@ -5,7 +5,7 @@ use bevy_egui::{egui, EguiContexts};
 
 use crate::engine::{
     EngineCore, RunState, ENGINES, FUELS, MATERIAL_CATALOG, OIL_GRADES, P_ATM,
-    engine_count, fuel_count, BearingState,
+    engine_count, fuel_count, BearingState, DynoState, DynoPhase,
 };
 // Disambiguate from `bevy::prelude::Material` (a trait) — we want our
 // engine-physics `Material` struct.
@@ -23,6 +23,7 @@ impl Plugin for UiPlugin {
 fn ui_panel(
     mut ctx: EguiContexts, 
     mut core: ResMut<EngineCore>,
+    mut dyno: ResMut<DynoState>,
     mut visual_query: Query<(Entity, &Name, Option<&Children>, Option<&Parent>, &mut Visibility), With<EngineVisual>>,
 ) {
     let rpm = core.rpm();
@@ -230,6 +231,24 @@ fn ui_panel(
                         egui::Slider::new(&mut core.oil_config.viscosity_multiplier, 0.5..=2.0)
                             .text("Tuning Mult.")
                     );
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Slider::new(&mut core.oil_config.cooler_dissipation, 0.0..=1000.0)
+                                .text("Cooler Size")
+                                .suffix(" W/K")
+                        );
+                        ui.checkbox(&mut core.oil_config.fan_active, "Fan");
+                    });
+
+                    let therm_open = ((core.oil.temperature - 353.0) / 10.0).clamp(0.0, 1.0);
+                    let state_text = if therm_open <= 0.0 {
+                        egui::RichText::new("Thermostat: CLOSED").color(egui::Color32::from_rgb(100, 180, 255))
+                    } else if therm_open >= 1.0 {
+                        egui::RichText::new("Thermostat: OPEN").color(egui::Color32::from_rgb(255, 100, 100))
+                    } else {
+                        egui::RichText::new("Thermostat: OPENING").color(egui::Color32::from_rgb(255, 200, 100))
+                    };
+                    ui.label(state_text.small());
 
                     // Update current state viscosity immediately so telemetry stays in sync
                     core.oil.viscosity = crate::engine::viscosity_for(
@@ -261,6 +280,108 @@ fn ui_panel(
                         core.engine_seized = false;
                         let cfg = core.oil_config.clone();
                         core.oil.refill(&cfg);
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // ── Dyno Testing ─────────────────────────────────────────────
+                ui.collapsing(egui::RichText::new("Dyno Testing").strong(), |ui| {
+                    // Status
+                    let (status_text, status_color) = match dyno.phase {
+                        DynoPhase::Idle     => ("IDLE".to_string(), egui::Color32::from_gray(140)),
+                        DynoPhase::Sweeping => (format!("SWEEP @ {:.0} RPM", dyno.target_rpm), egui::Color32::from_rgb(80, 200, 100)),
+                        DynoPhase::Complete => ("COMPLETE".to_string(), egui::Color32::from_rgb(100, 180, 255)),
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Status").small());
+                        ui.colored_label(status_color, egui::RichText::new(&status_text).strong().monospace());
+                    });
+
+                    // Progress bar during sweep
+                    if dyno.active && dyno.end_rpm > dyno.start_rpm {
+                        let progress = (dyno.target_rpm - dyno.start_rpm) / (dyno.end_rpm - dyno.start_rpm);
+                        let bar = egui::ProgressBar::new(progress.clamp(0.0, 1.0))
+                            .text(format!("{:.0}%", progress * 100.0));
+                        ui.add(bar);
+                    }
+
+                    ui.add_space(4.0);
+
+                    // Start / Stop button
+                    ui.horizontal(|ui| {
+                        if dyno.active {
+                            if ui.button(egui::RichText::new("Stop Dyno").strong()).clicked() {
+                                dyno.stop();
+                            }
+                        } else {
+                            let can_start = core.run_state == RunState::Running;
+                            let btn = egui::Button::new(egui::RichText::new("Start Dyno Run").strong());
+                            if ui.add_enabled(can_start, btn).clicked() {
+                                let name = core.config.name;
+                                let redline = core.config.redline_rpm;
+                                dyno.start(name, redline);
+                            }
+                            if !can_start {
+                                ui.label(egui::RichText::new("(engine must be running)").small().weak());
+                            }
+                        }
+                    });
+
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(2.0);
+
+                    // Sweep config (only when not running)
+                    ui.add_enabled_ui(!dyno.active, |ui| {
+                        ui.label(egui::RichText::new("Sweep Config").small().strong());
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Start").small());
+                            ui.add(egui::DragValue::new(&mut dyno.start_rpm).speed(50.0).range(500.0..=5000.0).suffix(" RPM"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Ramp").small());
+                            ui.add(egui::DragValue::new(&mut dyno.ramp_rate).speed(10.0).range(50.0..=2000.0).suffix(" RPM/s"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Sample").small());
+                            ui.add(egui::DragValue::new(&mut dyno.sample_interval).speed(10.0).range(25.0..=500.0).suffix(" RPM"));
+                        });
+                        ui.add_space(2.0);
+                        let sweep_time = (core.config.redline_rpm - dyno.start_rpm) / dyno.ramp_rate;
+                        ui.label(egui::RichText::new(format!(
+                            "End: redline ({:.0})  ~{:.1}s sweep",
+                            core.config.redline_rpm, sweep_time,
+                        )).small().weak());
+                    });
+
+
+                    // Peak results
+                    if !dyno.results.is_empty() {
+                        ui.add_space(4.0);
+                        ui.separator();
+                        ui.add_space(2.0);
+                        ui.label(egui::RichText::new("Peak Results").small().strong());
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(format!(
+                                "{:.1} HP @ {:.0} RPM",
+                                dyno.peak_hp, dyno.peak_hp_rpm,
+                            )).monospace().strong().color(egui::Color32::from_rgb(255, 100, 100)));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(format!(
+                                "{:.1} Nm @ {:.0} RPM",
+                                dyno.peak_torque, dyno.peak_torque_rpm,
+                            )).monospace().strong().color(egui::Color32::from_rgb(100, 180, 255)));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(format!(
+                                "{:.1} kW peak",
+                                dyno.peak_hp / 1.341,
+                            )).monospace().small());
+                        });
                     }
                 });
 
@@ -336,17 +457,27 @@ fn ui_panel(
                 // ── Seized banner ────────────────────────────────────────────
                 if core.engine_seized {
                     let rect_resp = ui.allocate_response(
-                        egui::vec2(ui.available_width(), 30.0),
+                        egui::vec2(ui.available_width(), 45.0),
                         egui::Sense::hover(),
                     );
                     let painter = ui.painter();
                     painter.rect_filled(rect_resp.rect, 4.0, egui::Color32::from_rgb(170, 30, 30));
+                    
+                    let center = rect_resp.rect.center();
+                    
                     painter.text(
-                        rect_resp.rect.center(),
+                        center - egui::vec2(0.0, 8.0),
                         egui::Align2::CENTER_CENTER,
-                        "ENGINE SEIZED — Reset Damage to recover",
-                        egui::FontId::proportional(14.0),
+                        format!("ENGINE SEIZED: {}", core.seizure_reason),
+                        egui::FontId::proportional(13.0),
                         egui::Color32::WHITE,
+                    );
+                    painter.text(
+                        center + egui::vec2(0.0, 8.0),
+                        egui::Align2::CENTER_CENTER,
+                        "Reset Damage to recover",
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::from_white_alpha(200),
                     );
                     ui.add_space(6.0);
                 }
@@ -453,6 +584,41 @@ fn ui_panel(
                 }
             });
         });
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // BOTTOM PANEL — Dyno Results Graph (hand-drawn with egui painter)
+    // ══════════════════════════════════════════════════════════════════════════
+    if !dyno.results.is_empty() {
+        egui::TopBottomPanel::bottom("dyno_graph_panel")
+            .resizable(true)
+            .default_height(220.0)
+            .height_range(140.0..=400.0)
+            .show(ctx.ctx_mut(), |ui| {
+                let title = if dyno.tested_engine_name.is_empty() {
+                    "Dyno Results".to_string()
+                } else {
+                    format!("Dyno  \u{2014}  {}", dyno.tested_engine_name)
+                };
+                ui.horizontal(|ui| {
+                    ui.heading(&title);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Clear").clicked() {
+                            dyno.results.clear();
+                            dyno.peak_hp = 0.0;
+                            dyno.peak_torque = 0.0;
+                        }
+                        ui.label(egui::RichText::new(format!(
+                            "Peak: {:.1} HP @ {:.0}  |  {:.1} Nm @ {:.0}",
+                            dyno.peak_hp, dyno.peak_hp_rpm,
+                            dyno.peak_torque, dyno.peak_torque_rpm,
+                        )).monospace().small());
+                    });
+                });
+                ui.separator();
+
+                dyno_graph(ui, &dyno);
+            });
+    }
 }
 
 // ──────────────────────────────── Widgets ───────────────────────────────────
@@ -615,4 +781,204 @@ fn jet_egui(t: f32) -> (u8, u8, u8) {
     let g = (1.5 - (4.0 * t - 2.0).abs()).clamp(0.0, 1.0);
     let b = (1.5 - (4.0 * t - 1.0).abs()).clamp(0.0, 1.0);
     ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
+}
+
+// ──────────────────────── Dyno graph (painter-based) ────────────────────────
+fn dyno_graph(ui: &mut egui::Ui, dyno: &DynoState) {
+    let available = ui.available_size();
+    let (rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+
+    // Margins for axis labels
+    let margin_left = 55.0;
+    let margin_right = 55.0;
+    let margin_top = 8.0;
+    let margin_bottom = 22.0;
+
+    let plot_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + margin_left, rect.top() + margin_top),
+        egui::pos2(rect.right() - margin_right, rect.bottom() - margin_bottom),
+    );
+    if plot_rect.width() < 40.0 || plot_rect.height() < 30.0 {
+        return;
+    }
+
+    // Background
+    painter.rect_filled(plot_rect, 4.0, egui::Color32::from_gray(22));
+    painter.rect_stroke(plot_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_gray(50)));
+
+    // Data ranges
+    let rpm_min = dyno.results.iter().map(|s| s.rpm).fold(f32::INFINITY, f32::min);
+    let rpm_max = dyno.results.iter().map(|s| s.rpm).fold(f32::NEG_INFINITY, f32::max);
+    let max_torque = dyno.results.iter().map(|s| s.torque_nm).fold(0.0_f32, f32::max);
+    let max_hp = dyno.results.iter().map(|s| s.power_hp).fold(0.0_f32, f32::max);
+    let y_max = max_torque.max(max_hp).max(10.0) * 1.15; // 15% headroom
+
+    let rpm_range = (rpm_max - rpm_min).max(100.0);
+
+    // Map data to pixel coordinates
+    let to_x = |rpm: f32| -> f32 {
+        plot_rect.left() + (rpm - rpm_min) / rpm_range * plot_rect.width()
+    };
+    let to_y = |val: f32| -> f32 {
+        plot_rect.bottom() - (val / y_max) * plot_rect.height()
+    };
+
+    // Grid lines — horizontal
+    let grid_color = egui::Color32::from_gray(38);
+    let label_color = egui::Color32::from_gray(120);
+    let font = egui::FontId::monospace(10.0);
+
+    let y_step = nice_step(y_max, 5);
+    let mut y_val = 0.0;
+    while y_val <= y_max {
+        let py = to_y(y_val);
+        if py >= plot_rect.top() && py <= plot_rect.bottom() {
+            painter.line_segment(
+                [egui::pos2(plot_rect.left(), py), egui::pos2(plot_rect.right(), py)],
+                egui::Stroke::new(0.5, grid_color),
+            );
+            // Left label (torque)
+            painter.text(
+                egui::pos2(plot_rect.left() - 4.0, py),
+                egui::Align2::RIGHT_CENTER,
+                format!("{:.0}", y_val),
+                font.clone(),
+                egui::Color32::from_rgb(100, 180, 255),
+            );
+            // Right label (HP, same scale for simplicity)
+            painter.text(
+                egui::pos2(plot_rect.right() + 4.0, py),
+                egui::Align2::LEFT_CENTER,
+                format!("{:.0}", y_val),
+                font.clone(),
+                egui::Color32::from_rgb(255, 100, 100),
+            );
+        }
+        y_val += y_step;
+    }
+
+    // Grid lines — vertical (RPM)
+    let x_step = nice_step(rpm_range, 6);
+    let mut x_val = (rpm_min / x_step).ceil() * x_step;
+    while x_val <= rpm_max {
+        let px = to_x(x_val);
+        if px >= plot_rect.left() && px <= plot_rect.right() {
+            painter.line_segment(
+                [egui::pos2(px, plot_rect.top()), egui::pos2(px, plot_rect.bottom())],
+                egui::Stroke::new(0.5, grid_color),
+            );
+            painter.text(
+                egui::pos2(px, plot_rect.bottom() + 3.0),
+                egui::Align2::CENTER_TOP,
+                format!("{:.0}", x_val),
+                font.clone(),
+                label_color,
+            );
+        }
+        x_val += x_step;
+    }
+
+    // Axis titles
+    painter.text(
+        egui::pos2(plot_rect.left() - 4.0, plot_rect.top() - 2.0),
+        egui::Align2::RIGHT_BOTTOM,
+        "Nm",
+        egui::FontId::proportional(10.0),
+        egui::Color32::from_rgb(100, 180, 255),
+    );
+    painter.text(
+        egui::pos2(plot_rect.right() + 4.0, plot_rect.top() - 2.0),
+        egui::Align2::LEFT_BOTTOM,
+        "HP",
+        egui::FontId::proportional(10.0),
+        egui::Color32::from_rgb(255, 100, 100),
+    );
+    painter.text(
+        egui::pos2(plot_rect.center().x, plot_rect.bottom() + 12.0),
+        egui::Align2::CENTER_TOP,
+        "RPM",
+        egui::FontId::proportional(10.0),
+        label_color,
+    );
+
+    // Draw torque curve
+    let torque_color = egui::Color32::from_rgb(100, 180, 255);
+    draw_curve(&painter, &dyno.results, |s| s.rpm, |s| s.torque_nm, to_x, to_y, torque_color, 2.5);
+
+    // Draw HP curve
+    let hp_color = egui::Color32::from_rgb(255, 100, 100);
+    draw_curve(&painter, &dyno.results, |s| s.rpm, |s| s.power_hp, to_x, to_y, hp_color, 2.5);
+
+    // Peak markers
+    if dyno.peak_torque > 0.0 {
+        let cx = to_x(dyno.peak_torque_rpm);
+        let cy = to_y(dyno.peak_torque);
+        painter.circle_filled(egui::pos2(cx, cy), 5.0, torque_color);
+        painter.circle_stroke(egui::pos2(cx, cy), 5.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+    }
+    if dyno.peak_hp > 0.0 {
+        let cx = to_x(dyno.peak_hp_rpm);
+        let cy = to_y(dyno.peak_hp);
+        painter.circle_filled(egui::pos2(cx, cy), 5.0, hp_color);
+        painter.circle_stroke(egui::pos2(cx, cy), 5.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+    }
+
+    // Legend (top-right of plot area)
+    let legend_x = plot_rect.right() - 100.0;
+    let legend_y = plot_rect.top() + 8.0;
+    painter.line_segment(
+        [egui::pos2(legend_x, legend_y + 5.0), egui::pos2(legend_x + 20.0, legend_y + 5.0)],
+        egui::Stroke::new(2.5, torque_color),
+    );
+    painter.text(
+        egui::pos2(legend_x + 24.0, legend_y + 5.0),
+        egui::Align2::LEFT_CENTER,
+        "Torque (Nm)",
+        egui::FontId::proportional(10.0),
+        torque_color,
+    );
+    painter.line_segment(
+        [egui::pos2(legend_x, legend_y + 20.0), egui::pos2(legend_x + 20.0, legend_y + 20.0)],
+        egui::Stroke::new(2.5, hp_color),
+    );
+    painter.text(
+        egui::pos2(legend_x + 24.0, legend_y + 20.0),
+        egui::Align2::LEFT_CENTER,
+        "Power (HP)",
+        egui::FontId::proportional(10.0),
+        hp_color,
+    );
+}
+
+/// Draw a polyline curve through data points.
+fn draw_curve(
+    painter: &egui::Painter,
+    samples: &[crate::engine::DynoSample],
+    x_fn: impl Fn(&crate::engine::DynoSample) -> f32,
+    y_fn: impl Fn(&crate::engine::DynoSample) -> f32,
+    to_x: impl Fn(f32) -> f32,
+    to_y: impl Fn(f32) -> f32,
+    color: egui::Color32,
+    width: f32,
+) {
+    if samples.len() < 2 { return; }
+    let points: Vec<egui::Pos2> = samples.iter()
+        .map(|s| egui::pos2(to_x(x_fn(s)), to_y(y_fn(s))))
+        .collect();
+    for w in points.windows(2) {
+        painter.line_segment([w[0], w[1]], egui::Stroke::new(width, color));
+    }
+}
+
+/// Choose a "nice" step value for grid lines given a data range and desired line count.
+fn nice_step(range: f32, target_lines: usize) -> f32 {
+    let raw = range / target_lines as f32;
+    let mag = 10.0_f32.powf(raw.log10().floor());
+    let norm = raw / mag;
+    let nice = if norm <= 1.5 { 1.0 }
+        else if norm <= 3.5 { 2.0 }
+        else if norm <= 7.5 { 5.0 }
+        else { 10.0 };
+    (nice * mag).max(1.0)
 }

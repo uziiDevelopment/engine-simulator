@@ -40,6 +40,7 @@ pub mod bearing;
 pub mod config;
 mod crank;
 mod cylinder;
+pub mod dyno;
 mod fuel;
 mod geometry;
 mod manifold;
@@ -53,6 +54,7 @@ pub use bearing::*;
 pub use config::*;
 pub use crank::*;
 pub use cylinder::*;
+pub use dyno::*;
 pub use fuel::*;
 pub use geometry::*;
 pub use manifold::*;
@@ -71,7 +73,8 @@ pub struct EnginePlugin;
 impl Plugin for EnginePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(EngineCore::new(0, 0))
-            .add_systems(Update, (engine_input, engine_step).chain());
+            .insert_resource(DynoState::default())
+            .add_systems(Update, (engine_input, engine_step, dyno::dyno_system).chain());
     }
 }
 
@@ -88,6 +91,7 @@ fn engine_input(keys: Res<ButtonInput<KeyCode>>, mut core: ResMut<EngineCore>) {
 pub fn engine_step(
     time: Res<Time>,
     mut core: ResMut<EngineCore>,
+    dyno: Res<DynoState>,
     audio_tx: Option<ResMut<crate::audio::AudioTx>>,
 ) {
     let frame_dt = time.delta_seconds().min(1.0 / 30.0) * core.time_scale;
@@ -160,6 +164,7 @@ pub fn engine_step(
         let mut total_block_heat_to_oil_w = 0.0_f32;
         let mut total_oil_consumed = 0.0_f32;
         let mut any_seized = false;
+        let mut new_seizure_reason = String::new();
         let num_cyl = core.config.num_cylinders;
         let wear_time_scale = core.wear_time_scale;
         let EngineCore {
@@ -225,8 +230,18 @@ pub fn engine_step(
                 total_friction_torque += 150.0;
             }
 
-            if mech.seized { any_seized = true; }
-            if mech.bearing_seized { any_seized = true; }
+            if mech.seized {
+                any_seized = true;
+                if new_seizure_reason.is_empty() {
+                    new_seizure_reason = format!("Cylinder {} melted/galled", i + 1);
+                }
+            }
+            if mech.bearing_seized {
+                any_seized = true;
+                if new_seizure_reason.is_empty() {
+                    new_seizure_reason = format!("Cylinder {} bearing seized", i + 1);
+                }
+            }
         }
 
         // ── Step rod bearings (one per cylinder) ───────────────────────────
@@ -261,7 +276,12 @@ pub fn engine_step(
                 );
                 total_friction_torque += brg_result.friction_torque;
                 total_friction_heat_w += brg_result.heat_to_oil_w;
-                if brg_result.seized { any_seized = true; }
+                if brg_result.seized {
+                    any_seized = true;
+                    if new_seizure_reason.is_empty() {
+                        new_seizure_reason = format!("Rod bearing {} spun/wiped", i + 1);
+                    }
+                }
             }
         }
 
@@ -280,7 +300,7 @@ pub fn engine_step(
                    * num_cyl as f32 * omega * omega * crank_r);
             let load_per_main = total_crank_load / n_mains as f32;
 
-            for brg in main_bearings.iter_mut() {
+            for (i, brg) in main_bearings.iter_mut().enumerate() {
                 let result = bearing::step_bearing(
                     &config.materials.main_bearing,
                     brg,
@@ -293,7 +313,12 @@ pub fn engine_step(
                 );
                 total_friction_torque += result.friction_torque;
                 total_friction_heat_w += result.heat_to_oil_w;
-                if result.seized { any_seized = true; }
+                if result.seized {
+                    any_seized = true;
+                    if new_seizure_reason.is_empty() {
+                        new_seizure_reason = format!("Main bearing {} spun/wiped", i + 1);
+                    }
+                }
             }
         }
 
@@ -307,7 +332,7 @@ pub fn engine_step(
             let cam_omega = omega * 0.5;
             let cam_load = 200.0 * num_cyl as f32; // ~200 N per valve spring
 
-            for brg in cam_bearings.iter_mut() {
+            for (i, brg) in cam_bearings.iter_mut().enumerate() {
                 let result = bearing::step_bearing(
                     &config.materials.cam_bearing,
                     brg,
@@ -320,7 +345,12 @@ pub fn engine_step(
                 );
                 total_friction_torque += result.friction_torque;
                 total_friction_heat_w += result.heat_to_oil_w;
-                if result.seized { any_seized = true; }
+                if result.seized {
+                    any_seized = true;
+                    if new_seizure_reason.is_empty() {
+                        new_seizure_reason = format!("Cam bearing {} spun/wiped", i + 1);
+                    }
+                }
             }
         }
         // Step the oil reservoir with the heat we just collected.
@@ -333,8 +363,9 @@ pub fn engine_step(
         last_friction_heat_w = total_friction_heat_w;
 
         // Latch a permanent seizure if anyone locked up thermally.
-        if any_seized {
+        if any_seized && !core.engine_seized {
             core.engine_seized = true;
+            core.seizure_reason = new_seizure_reason;
         }
 
         // ── Friction + starter + soft rev-limit ──────────────────────────
@@ -347,6 +378,16 @@ pub fn engine_step(
             tau_total -= ((rpm - core.config.redline_rpm) / 200.0).min(2.0) * 60.0;
         }
 
+        // The pure engine output torque (flywheel torque)
+        let engine_flywheel_torque = tau_total;
+
+        // ── Dyno absorption brake ────────────────────────────────────────
+        if dyno.active {
+            // The PID applies positive torque to brake the engine.
+            // Since engine spins with omega > 0, we subtract it.
+            tau_total -= dyno.absorption_torque;
+        }
+
         // ── Integrate the only true degree of freedom: the crank ─────────
         core.omega += tau_total / core.config.flywheel_inertia * dt;
         if core.omega < 0.0 {
@@ -356,7 +397,7 @@ pub fn engine_step(
         core.angle = (core.angle + dtheta).rem_euclid(TAU);
         core.fourstroke_angle = (core.fourstroke_angle + dtheta).rem_euclid(2.0 * TAU);
 
-        last_torque = tau_total;
+        last_torque = engine_flywheel_torque;
         total_work += tau_total * core.omega * dt;
 
         // Push audio sample

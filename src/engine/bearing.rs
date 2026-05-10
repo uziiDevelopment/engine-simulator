@@ -190,17 +190,28 @@ pub fn step_bearing(
         / (w * c * c + 1.0e-12);
     state.sommerfeld = sommerfeld;
 
-    // ── Film thickness estimate ────────────────────────────────────────────
+    // ── Film thickness estimate (with Squeeze-Film effect) ─────────────────
     // Minimum film h_min ≈ c · (1 - ε), where eccentricity ratio ε ≈ 1/(1+S).
-    // This is a *very* rough short-bearing approximation but gives the right
-    // qualitative behaviour: high S → ε small → thick film.
+    // Static calculation would cause instant collapse under peak combustion.
+    // Real oil films take time to squeeze out, protecting the bearing.
     let epsilon = 1.0 / (1.0 + 2.5 * sommerfeld.max(0.0));
-    let h_min = c * (1.0 - epsilon);
+    let target_h_min = c * (1.0 - epsilon);
+
+    // Squeeze out slowly, draw in quickly
+    let alpha = if target_h_min < state.film_thickness {
+        (15.0 * dt).clamp(0.0, 1.0)
+    } else {
+        (150.0 * dt).clamp(0.0, 1.0)
+    };
+    
+    // Smooth the actual film thickness toward the target
+    let h_min = state.film_thickness + (target_h_min - state.film_thickness) * alpha;
     state.film_thickness = h_min;
 
     // ── Lubrication regime (0 = boundary, 1 = full hydrodynamic) ──────────
-    // Transition around h_min ≈ 3 µm (surface roughness of finished journals).
-    let roughness = 3.0e-6_f32;
+    // Transition around h_min ≈ 0.5 µm (typical surface roughness of micro-polished engine journals).
+    // Using 3.0 µm was artificially throwing the bearing into metal-on-metal contact prematurely.
+    let roughness = 0.5e-6_f32;
     let lambda = h_min / roughness;       // film-thickness ratio
     let regime = ((lambda - 1.0) / 2.0).clamp(0.0, 1.0); // 0..1
 
@@ -225,7 +236,13 @@ pub fn step_bearing(
     let friction_power = friction_force * v_surface;
 
     // ── Heat ───────────────────────────────────────────────────────────────
-    let heat_j = friction_power * dt;
+    // Hydrodynamic friction mostly heats the oil film directly (carried away
+    // by side leakage). Boundary friction heats the metal asperities directly.
+    // The shell (being thin) only absorbs a fraction of this heat.
+    let heat_to_shell_w = effective_regime * f_hydro * v_surface * 0.05
+        + (1.0 - effective_regime) * f_boundary * v_surface * 0.50;
+    
+    let heat_j = heat_to_shell_w * dt;
 
     // Bearing shell temperature: heated by friction, cooled by oil flow.
     let shell_thermal_mass = cfg.shell_material.density
@@ -236,12 +253,13 @@ pub fn step_bearing(
     state.temperature += heat_j / shell_thermal_mass;
 
     // Cooling: oil carries heat away proportional to flow (≈ oil pressure).
+    // Forced convection coefficient.
     let oil_cooling = (state.temperature - oil.temperature)
-        * 0.35 * oil_presence * dt;
+        * 15.0 * oil_presence * dt;
     state.temperature -= oil_cooling;
 
-    // Ambient dissipation (through block)
-    let ambient_cooling = (state.temperature - super::thermo::T_ATM) * 0.02 * dt;
+    // Ambient dissipation (through massive block/rod)
+    let ambient_cooling = (state.temperature - super::thermo::T_ATM) * 2.0 * dt;
     state.temperature -= ambient_cooling;
 
     state.temperature = state.temperature.clamp(

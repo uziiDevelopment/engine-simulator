@@ -289,7 +289,9 @@ pub fn step_cylinder(
     // Quick-and-dirty Woschni-style coefficient.  Real Woschni uses speed and
     // pressure; we just scale with surface area, ΔT and fix a coefficient.
     let wall_temp = 410.0; // K (hot block)
-    let h_w = 480.0;       // W/m²K, average
+    // Scale h_w with pressure to roughly mimic Woschni.
+    let p_ratio = (p_old / P_ATM).max(1.0);
+    let h_w = 130.0 * p_ratio.powf(0.8);
     let surface_area = PI * BORE * (STROKE_TOP - piston_y(angle_new, cyl_idx)).max(0.0)
         + 2.0 * PISTON_AREA;
     let q_wall = h_w * surface_area * (cyl.temperature - wall_temp) * dt;
@@ -489,7 +491,9 @@ pub fn step_cylinder_cfg(
     // (`cyl.block_temp`), updated downstream by `apply_mechanical_step_cfg`
     // along with friction heat and dissipation to oil + air.
     let wall_temp = cyl.block_temp;
-    let h_w = 480.0;
+    // Scale h_w with pressure to roughly mimic Woschni heat transfer correlation
+    let p_ratio = (p_old / P_ATM).max(1.0);
+    let h_w = 130.0 * p_ratio.powf(0.8);
     let bore = cfg.bore;
     let piston_area = cfg.piston_area();
     let surface_area = PI * bore * (cfg.stroke_top() - cfg.piston_y(angle_new, cyl_idx)).max(0.0)
@@ -688,7 +692,7 @@ pub fn apply_mechanical_step_cfg(
     cyl.block_temp += pist_to_block_K * (piston_cap / block_cap);
 
     let oil_presence = (oil.mass / oil_cfg.capacity).clamp(0.0, 1.0);
-    let block_to_oil_K = (cyl.block_temp - oil.temperature) * 0.45 * oil_presence * dt;
+    let block_to_oil_K = (cyl.block_temp - oil.temperature) * 0.05 * oil_presence * dt;
     cyl.block_temp -= block_to_oil_K;
     let block_heat_to_oil_w = if dt > 0.0 { (block_to_oil_K * block_cap) / dt } else { 0.0 };
 

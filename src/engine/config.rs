@@ -261,7 +261,7 @@ impl EngineConfig {
 use super::geometry::VIS_SCALE;
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ENGINE PRESETS (lazily initialized since we now use Vec)
+// ENGINE PRESETS
 // ══════════════════════════════════════════════════════════════════════════════
 
 pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
@@ -305,6 +305,92 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
         intake_valve_diameter: 0.034,
         exhaust_valve_diameter: 0.030,
 
+        cylinder_spacing: 0.10,
+        materials: MaterialsConfig::default_for_bore(0.086),
+    },
+
+    // ── 2.5L Inline-5 (like an Audi 2.5 TFSI) ───────────────────────────────
+    EngineConfig {
+        name: "2.5L Inline-5",
+        layout: EngineLayout::Inline,
+        bank_angle: 0.0,
+        num_cylinders: 5,
+        bore: 0.0825,
+        stroke: 0.0928,
+        rod_length: 0.144,
+        compression_ratio: 10.0,
+        // 144-degree evenly spaced crank throws
+        crank_phases: vec![0.0, 0.8 * PI, 1.2 * PI, 1.6 * PI, 0.4 * PI],
+        firing_offsets_deg: vec![0.0, 576.0, 144.0, 432.0, 288.0],
+
+        flywheel_inertia: 0.22,
+        friction_base: 14.5,
+        friction_viscous: 0.052,
+        friction_windage: 0.00014,
+
+        starter_torque: 280.0,
+        starter_disengage_rpm: 600.0,
+        redline_rpm: 7200.0,
+        stall_rpm: 240.0,
+
+        throttle_area_max: 0.0018,
+        idle_bleed_frac: 0.012,
+        idle_throttle_min: 0.015,
+        intake_volume: 0.0025,
+        exhaust_volume: 0.0020,
+        tailpipe_area: 0.0012,
+
+        intake_open_deg: 354.0,
+        intake_close_deg: 580.0,
+        exhaust_open_deg: 140.0,
+        exhaust_close_deg: 366.0,
+        intake_peak_lift: 0.011,
+        exhaust_peak_lift: 0.011,
+        intake_valve_diameter: 0.034,
+        exhaust_valve_diameter: 0.030,
+        cylinder_spacing: 0.10,
+        materials: MaterialsConfig::default_for_bore(0.0825),
+    },
+
+    // ── 3.0L Inline-6 (like a Toyota 2JZ / BMW B58) ─────────────────────────
+    EngineConfig {
+        name: "3.0L Inline-6",
+        layout: EngineLayout::Inline,
+        bank_angle: 0.0,
+        num_cylinders: 6,
+        bore: 0.086,
+        stroke: 0.086,
+        rod_length: 0.142,
+        compression_ratio: 9.0,
+        // 120-degree mirror-symmetrical crank
+        crank_phases: vec![0.0, 2.0 * PI / 3.0, 4.0 * PI / 3.0, 4.0 * PI / 3.0, 2.0 * PI / 3.0, 0.0],
+        firing_offsets_deg: vec![0.0, 600.0, 120.0, 480.0, 240.0, 360.0],
+
+        flywheel_inertia: 0.26,
+        friction_base: 16.0,
+        friction_viscous: 0.055,
+        friction_windage: 0.00016,
+
+        starter_torque: 300.0,
+        starter_disengage_rpm: 600.0,
+        redline_rpm: 7500.0,
+        stall_rpm: 250.0,
+
+        throttle_area_max: 0.0020,
+        idle_bleed_frac: 0.010,
+        idle_throttle_min: 0.013,
+        intake_volume: 0.0030,
+        exhaust_volume: 0.0025,
+        tailpipe_area: 0.0014,
+
+        intake_open_deg: 352.0,
+        intake_close_deg: 585.0,
+        exhaust_open_deg: 135.0,
+        exhaust_close_deg: 368.0,
+        intake_peak_lift: 0.011,
+        exhaust_peak_lift: 0.011,
+        intake_valve_diameter: 0.035,
+        exhaust_valve_diameter: 0.031,
         cylinder_spacing: 0.10,
         materials: MaterialsConfig::default_for_bore(0.086),
     },
@@ -353,6 +439,155 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
         materials: MaterialsConfig::default_for_bore(0.092),
     },
 
+    // ── 5.2L V10 (like an Audi R8 / Lamborghini Huracan) ────────────────────
+    EngineConfig {
+        name: "5.2L V10",
+        layout: EngineLayout::V,
+        bank_angle: PI * 0.4, // 72-degree V for perfect primary balance and even firing
+        num_cylinders: 10,
+        bore: 0.0845,
+        stroke: 0.0928,
+        rod_length: 0.150,
+        compression_ratio: 12.5,
+        crank_phases: vec![
+            0.0, 0.0, 
+            0.8 * PI, 0.8 * PI, 
+            1.6 * PI, 1.6 * PI, 
+            0.4 * PI, 0.4 * PI, 
+            1.2 * PI, 1.2 * PI
+        ],
+        firing_offsets_deg: vec![36.0, 324.0, 612.0, 180.0, 468.0, 396.0, 684.0, 252.0, 540.0, 108.0],
+
+        flywheel_inertia: 0.28,
+        friction_base: 25.0,
+        friction_viscous: 0.070,
+        friction_windage: 0.00020,
+
+        starter_torque: 350.0,
+        starter_disengage_rpm: 650.0,
+        redline_rpm: 8500.0, // V10 screams!
+        stall_rpm: 300.0,
+
+        throttle_area_max: 0.0026,
+        idle_bleed_frac: 0.010,
+        idle_throttle_min: 0.012,
+        intake_volume: 0.0050,
+        exhaust_volume: 0.0040,
+        tailpipe_area: 0.0020,
+
+        intake_open_deg: 345.0,
+        intake_close_deg: 595.0,
+        exhaust_open_deg: 125.0,
+        exhaust_close_deg: 375.0,
+        intake_peak_lift: 0.012,
+        exhaust_peak_lift: 0.012,
+        intake_valve_diameter: 0.036,
+        exhaust_valve_diameter: 0.031,
+        cylinder_spacing: 0.11,
+        materials: MaterialsConfig::default_for_bore(0.0845),
+    },
+
+    // ── 6.5L V12 (like a Ferrari 812 / Lamborghini Aventador) ───────────────
+    EngineConfig {
+        name: "6.5L V12",
+        layout: EngineLayout::V,
+        bank_angle: PI / 3.0, // 60-degree V
+        num_cylinders: 12,
+        bore: 0.095,
+        stroke: 0.0764,
+        rod_length: 0.138,
+        compression_ratio: 11.8,
+        crank_phases: vec![
+            0.0, 0.0, 
+            2.0 * PI / 3.0, 2.0 * PI / 3.0, 
+            4.0 * PI / 3.0, 4.0 * PI / 3.0, 
+            4.0 * PI / 3.0, 4.0 * PI / 3.0, 
+            2.0 * PI / 3.0, 2.0 * PI / 3.0, 
+            0.0, 0.0
+        ],
+        firing_offsets_deg: vec![30.0, 330.0, 630.0, 210.0, 510.0, 450.0, 150.0, 90.0, 270.0, 570.0, 390.0, 690.0],
+
+        flywheel_inertia: 0.32,
+        friction_base: 28.0,
+        friction_viscous: 0.075,
+        friction_windage: 0.00022,
+
+        starter_torque: 400.0,
+        starter_disengage_rpm: 650.0,
+        redline_rpm: 8500.0,
+        stall_rpm: 300.0,
+
+        throttle_area_max: 0.0032,
+        idle_bleed_frac: 0.009,
+        idle_throttle_min: 0.011,
+        intake_volume: 0.0065,
+        exhaust_volume: 0.0050,
+        tailpipe_area: 0.0022,
+
+        intake_open_deg: 345.0,
+        intake_close_deg: 595.0,
+        exhaust_open_deg: 125.0,
+        exhaust_close_deg: 375.0,
+        intake_peak_lift: 0.012,
+        exhaust_peak_lift: 0.012,
+        intake_valve_diameter: 0.038,
+        exhaust_valve_diameter: 0.032,
+        cylinder_spacing: 0.11,
+        materials: MaterialsConfig::default_for_bore(0.095),
+    },
+
+    // ── 8.0L W16 (like a Bugatti Chiron, simulated physically as a V16) ─────
+    EngineConfig {
+        name: "8.0L W16 (Simulated as V16)",
+        layout: EngineLayout::V,
+        bank_angle: PI / 2.0, // 90-degree V equivalent
+        num_cylinders: 16,
+        bore: 0.086,
+        stroke: 0.086, // 16 x 500cc = 8.0L exactly
+        rod_length: 0.145,
+        compression_ratio: 9.0, // Turbocharged compression
+        crank_phases: vec![
+            0.0, 0.0, 
+            PI / 4.0, PI / 4.0, 
+            PI / 2.0, PI / 2.0, 
+            3.0 * PI / 4.0, 3.0 * PI / 4.0, 
+            PI, PI, 
+            5.0 * PI / 4.0, 5.0 * PI / 4.0, 
+            3.0 * PI / 2.0, 3.0 * PI / 2.0, 
+            7.0 * PI / 4.0, 7.0 * PI / 4.0
+        ],
+        // Produces flawless 45-degree exhaust pulses
+        firing_offsets_deg: vec![45.0, 315.0, 360.0, 270.0, 675.0, 225.0, 630.0, 180.0, 585.0, 135.0, 540.0, 90.0, 495.0, 405.0, 450.0, 0.0],
+
+        flywheel_inertia: 0.65, // Massive flywheel
+        friction_base: 40.0,
+        friction_viscous: 0.090,
+        friction_windage: 0.00030,
+
+        starter_torque: 550.0,
+        starter_disengage_rpm: 550.0,
+        redline_rpm: 6800.0,
+        stall_rpm: 350.0,
+
+        throttle_area_max: 0.0040,
+        idle_bleed_frac: 0.008,
+        idle_throttle_min: 0.010,
+        intake_volume: 0.0080,
+        exhaust_volume: 0.0065,
+        tailpipe_area: 0.0030,
+
+        intake_open_deg: 350.0,
+        intake_close_deg: 590.0,
+        exhaust_open_deg: 130.0,
+        exhaust_close_deg: 370.0,
+        intake_peak_lift: 0.011,
+        exhaust_peak_lift: 0.011,
+        intake_valve_diameter: 0.035,
+        exhaust_valve_diameter: 0.030,
+        cylinder_spacing: 0.11,
+        materials: MaterialsConfig::default_for_bore(0.086),
+    },
+
     // ── 3.8L Flat-6 (like a Porsche 997) ────────────────────────────────────
     EngineConfig {
         name: "3.8L Flat-6",
@@ -397,7 +632,6 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
         materials: MaterialsConfig::default_for_bore(0.102),
     },
 ]);
-
 #[inline]
 pub fn engine_count() -> usize { ENGINES.len() }
 
