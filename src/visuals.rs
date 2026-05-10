@@ -31,6 +31,7 @@ impl Plugin for VisualsPlugin {
                     animate::animate_valves,
                     animate::animate_cylinder_gas,
                     animate::animate_manifolds,
+                    animate::animate_turbo,
                     animate::animate_damage,
                     animate::apply_flywheel_material,
                     animate::apply_clutch_material,
@@ -79,6 +80,14 @@ pub struct EngineVisual;
 #[derive(Component)] pub struct Crankshaft;
 #[derive(Component)] pub struct Flywheel;
 #[derive(Component)] pub struct Clutch;
+
+/// The compressor wheel of the turbocharger (cold side, intake).
+#[derive(Component)] pub struct CompressorWheel;
+/// The turbine wheel of the turbocharger (hot side, exhaust).
+#[derive(Component)] pub struct TurbineWheel;
+/// The translucent housing material — tinted by boost pressure.
+#[derive(Component)]
+pub struct TurboHousing { pub material: Handle<StandardMaterial> }
 
 #[derive(Component)]
 pub struct Piston {

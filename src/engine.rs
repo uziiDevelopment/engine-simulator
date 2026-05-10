@@ -49,6 +49,7 @@ pub mod material;
 pub mod oil;
 mod state;
 mod thermo;
+pub mod turbo;
 mod valve;
 
 pub use bearing::*;
@@ -64,6 +65,7 @@ pub use material::*;
 pub use oil::*;
 pub use state::*;
 pub use thermo::*;
+pub use turbo::*;
 pub use valve::*;
 
 use bevy::prelude::*;
@@ -185,12 +187,21 @@ pub fn engine_step(
             ref config, ref fuel,
             ref mut cylinders,
             ref mut intake, ref mut exhaust,
+            ref mut turbo,
             ref oil_config, ref oil,
             ..
         } = *core;
 
-        manifold::throttle_flow_cfg(config, intake, throttle_eff, dt);
-        manifold::exhaust_to_atmosphere_cfg(config, exhaust, dt);
+        if config.turbo.enabled {
+            // Turbo path: turbine pulls from exhaust + spins compressor that
+            // fills the boost plenum.  Throttle then bleeds boost into intake.
+            turbo::step_turbo(&config.turbo, turbo, intake, exhaust, throttle_eff, dt);
+            let throttle_area = config.throttle_area(throttle_eff);
+            turbo::throttle_flow_boosted(throttle_area, &mut turbo.boost, intake, throttle_eff, dt);
+        } else {
+            manifold::throttle_flow_cfg(config, intake, throttle_eff, dt);
+            manifold::exhaust_to_atmosphere_cfg(config, exhaust, dt);
+        }
 
         for i in 0..num_cyl {
             // Worn-out cylinders contribute reduced gas torque (lost compression
@@ -487,6 +498,11 @@ pub fn engine_step(
                 intake_pressure:  core.intake.pressure(),
                 knock:            substep_knock.clamp(0.0, 1.0),
                 rpm:              core.rpm(),
+                turbo_enabled:    core.config.turbo.enabled,
+                turbo_shaft_rpm:  core.turbo.shaft_rpm(),
+                boost_pa:         core.turbo.boost_gauge_pa(),
+                bov_envelope:     core.turbo.bov_envelope,
+                blade_count:      core.config.turbo.blade_count,
             });
         }
     }

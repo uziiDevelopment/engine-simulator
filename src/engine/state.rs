@@ -15,6 +15,7 @@ use super::manifold::Manifold;
 use super::oil::{OilConfig, OilState};
 use super::thermo::{P_ATM, R_AIR, T_ATM, T_EXH_AMBIENT};
 use super::bearing::{BearingState, main_bearing_count};
+use super::turbo::TurboState;
 
 /// High-level engine run state.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -62,6 +63,9 @@ pub struct EngineCore {
     pub cylinders: Vec<CylinderState>,
     pub intake:    Manifold,
     pub exhaust:   Manifold,
+
+    // ── Forced induction ────────────────────────────────────────────────────
+    pub turbo: TurboState,
 
     // ── Lubrication ─────────────────────────────────────────────────────────
     pub oil_config: OilConfig,
@@ -133,6 +137,8 @@ impl EngineCore {
         let oil_config = OilConfig::default();
         let oil = OilState::fresh(&oil_config);
 
+        let turbo = TurboState::fresh(&config.turbo);
+
         let coolant_config = CoolantConfig::default();
         let coolant = CoolantState::fresh(&coolant_config);
 
@@ -165,6 +171,7 @@ impl EngineCore {
             cylinders,
             intake,
             exhaust,
+            turbo,
 
             oil_config,
             oil,
@@ -238,6 +245,8 @@ impl EngineCore {
             flow_signal: 0.0,
             label: "exhaust",
         };
+
+        self.turbo = TurboState::fresh(&config.turbo);
 
         self.config = config;
         self.config_idx = idx;

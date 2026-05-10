@@ -10,6 +10,11 @@ pub struct AudioSample {
     pub intake_pressure:  f32,
     pub knock:            f32,
     pub rpm:              f32,
+    pub turbo_enabled:    bool,
+    pub turbo_shaft_rpm:  f32,
+    pub boost_pa:         f32,
+    pub bov_envelope:     f32,
+    pub blade_count:      u32,
 }
 
 // ── Bevy resource for UI to read/write audio config ─────────────────────────
@@ -191,7 +196,20 @@ struct EngineAudioSource {
     end_rpm:    f32,
     start_knock: f32,
     end_knock:   f32,
+    start_turbo_rpm: f32,
+    end_turbo_rpm:   f32,
+    start_boost: f32,
+    end_boost:   f32,
+    start_bov:   f32,
+    end_bov:     f32,
+    cur_turbo_enabled: bool,
+    cur_blade_count:   u32,
     is_first_sample: bool,
+
+    // Turbo synth state
+    whine_phase: f32,
+    whoosh_lp:   Biquad,
+    bov_bp:      Biquad,
 
     // DSP state
     prev_raw:   f32,
@@ -231,7 +249,15 @@ impl EngineAudioSource {
             start_exh: 0.0,  end_exh: 0.0,
             start_rpm: 0.0,  end_rpm: 0.0,
             start_knock: 0.0, end_knock: 0.0,
+            start_turbo_rpm: 0.0, end_turbo_rpm: 0.0,
+            start_boost: 0.0, end_boost: 0.0,
+            start_bov: 0.0, end_bov: 0.0,
+            cur_turbo_enabled: false,
+            cur_blade_count: 11,
             is_first_sample: true,
+            whine_phase: 0.0,
+            whoosh_lp: Biquad::lowpass(2200.0, fs, 0.707),
+            bov_bp:    Biquad::bandpass(1800.0, fs, 1.2),
             prev_raw: 0.0,
             dc_blocked: 0.0,
             lpf_main: Biquad::lowpass(3500.0, fs, 0.707),
@@ -296,12 +322,18 @@ impl Iterator for EngineAudioSource {
             self.start_exh   = self.end_exh;
             self.start_rpm   = self.end_rpm;
             self.start_knock = self.end_knock;
+            self.start_turbo_rpm = self.end_turbo_rpm;
+            self.start_boost = self.end_boost;
+            self.start_bov   = self.end_bov;
 
             let s = self.local_queue.remove(0);
             if self.is_first_sample {
                 self.start_exh   = s.exhaust_pressure;
                 self.start_rpm   = s.rpm;
                 self.start_knock = s.knock;
+                self.start_turbo_rpm = s.turbo_shaft_rpm;
+                self.start_boost = s.boost_pa;
+                self.start_bov   = s.bov_envelope;
                 self.prev_raw    = (s.exhaust_pressure - 101_325.0) * 0.00005;
                 self.is_first_sample = false;
             }
@@ -309,6 +341,11 @@ impl Iterator for EngineAudioSource {
             self.end_exh    = s.exhaust_pressure;
             self.end_rpm    = s.rpm;
             self.end_knock  = s.knock;
+            self.end_turbo_rpm = s.turbo_shaft_rpm;
+            self.end_boost  = s.boost_pa;
+            self.end_bov    = s.bov_envelope;
+            self.cur_turbo_enabled = s.turbo_enabled;
+            self.cur_blade_count   = s.blade_count;
         }
 
         // ── Stage 1: Interpolate fields to 44.1 kHz ──────────────────────────
@@ -348,8 +385,46 @@ impl Iterator for EngineAudioSource {
         self.smooth_gain += (raw_gain - self.smooth_gain) * 0.002;
         let leveled = signal * self.smooth_gain;
 
+        // ── Stage 8b: Turbo synth (whine + spool whoosh + BOV chirp) ─────────
+        let mut turbo_signal = 0.0;
+        if self.cur_turbo_enabled {
+            let turbo_rpm = self.start_turbo_rpm
+                + (self.end_turbo_rpm - self.start_turbo_rpm) * t;
+            let boost     = self.start_boost
+                + (self.end_boost - self.start_boost) * t;
+            let bov       = self.start_bov
+                + (self.end_bov - self.start_bov) * t;
+
+            // Blade-pass whine fundamental.
+            let blade_hz = (turbo_rpm / 60.0) * self.cur_blade_count as f32;
+            let whine_amp = (boost / 1.5e5).clamp(0.0, 1.0)
+                          * (turbo_rpm / 80_000.0).clamp(0.0, 1.0)
+                          * 0.18;
+            self.whine_phase += 2.0 * std::f32::consts::PI * blade_hz / sample_rate;
+            if self.whine_phase > 2.0 * std::f32::consts::PI {
+                self.whine_phase -= 2.0 * std::f32::consts::PI;
+            }
+            let whine = (self.whine_phase.sin()
+                + 0.35 * (self.whine_phase * 2.0).sin()) * whine_amp;
+
+            // Spool whoosh: filtered noise, gain ∝ shaft speed.
+            self.noise_seed = self.noise_seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let noise = ((self.noise_seed >> 16) as f32 / 32768.0) - 1.0;
+            let whoosh_gain = (turbo_rpm / 120_000.0).clamp(0.0, 1.0) * 0.10;
+            let whoosh = self.whoosh_lp.process(noise) * whoosh_gain;
+
+            // BOV chirp: bandpassed noise gated by envelope, with pitch-down feel
+            // captured by simply scaling the bandpass output by envelope^2.
+            let bov_gain = (bov * bov) * 0.45;
+            self.noise_seed = self.noise_seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let noise2 = ((self.noise_seed >> 16) as f32 / 32768.0) - 1.0;
+            let bov_sig = self.bov_bp.process(noise2) * bov_gain;
+
+            turbo_signal = whine + whoosh + bov_sig;
+        }
+
         // ── Stage 9: Drive + soft-clip + knock transient ─────────────────────
-        let driven       = (leveled * 2.2).tanh() * 0.78;
+        let driven       = ((leveled + turbo_signal) * 2.2).tanh() * 0.78;
         let knock_contrib = knock.clamp(0.0, 1.0) * 0.7;
         let output = (driven + knock_contrib).clamp(-1.0, 1.0);
 

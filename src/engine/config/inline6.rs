@@ -49,5 +49,6 @@ pub fn preset() -> EngineConfig {
         intake_runner_area: 1.40e-3,
         cylinder_spacing: 0.10,
         materials: MaterialsConfig::default_for_bore(0.086),
+        turbo: crate::engine::turbo::TurboConfig::default(),
     }
 }

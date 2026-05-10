@@ -42,3 +42,5 @@ You are calculating thermodynamics, but the cylinder blocks don't get hot yet.
 ## 7. UI Enhancements
 *   **P-V Diagrams:** Draw a real-time Pressure-Volume diagram in the UI for one of the cylinders. This is a classic thermodynamics visualization that shows the "work" being done by the engine cycle.
 *   **Engine Builder UI:** Since you have a `build_engine` function for dynamic generation, add a UI panel where the user can drag sliders to change bore, stroke, cylinder count, and layout, and instantly see the engine rebuild and behave differently.
+
+exhaust headers and intake manifolds with dynamic pathing

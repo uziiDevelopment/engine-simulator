@@ -205,6 +205,57 @@ fn ui_panel(
                 ui.separator();
                 ui.add_space(4.0);
 
+                // ── Turbocharger ─────────────────────────────────────────────
+                ui.collapsing(egui::RichText::new("Turbocharger").strong(), |ui| {
+                    let mut enabled = core.config.turbo.enabled;
+                    if ui.checkbox(&mut enabled, "Enable Turbo").changed() {
+                        core.config.turbo.enabled = enabled;
+                        // Reset turbo state and trigger visual rebuild.
+                        core.turbo = crate::engine::turbo::TurboState::fresh(&core.config.turbo);
+                        core.config_generation += 1;
+                    }
+                    if core.config.turbo.enabled {
+                        ui.add_space(4.0);
+                        let mut target_bar = core.config.turbo.target_boost_pa / 1.0e5;
+                        if ui.add(
+                            egui::Slider::new(&mut target_bar, 0.0..=2.5)
+                                .text("Target Boost")
+                                .custom_formatter(|v, _| format!("{:.2} bar", v))
+                        ).changed() {
+                            core.config.turbo.target_boost_pa = target_bar * 1.0e5;
+                        }
+                        ui.add(
+                            egui::Slider::new(
+                                &mut core.config.turbo.intercooler_effectiveness,
+                                0.0..=1.0,
+                            )
+                            .text("Intercooler")
+                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+                        );
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(format!(
+                            "Shaft: {:>6.0} RPM",
+                            core.turbo.shaft_rpm()
+                        )).monospace().small());
+                        ui.label(egui::RichText::new(format!(
+                            "Boost: {:>+5.2} bar",
+                            core.turbo.boost_gauge_pa() / 1.0e5
+                        )).monospace().small());
+                        ui.label(egui::RichText::new(format!(
+                            "Wastegate: {:>3.0}%",
+                            core.turbo.wastegate_open_frac * 100.0
+                        )).monospace().small());
+                        ui.label(egui::RichText::new(format!(
+                            "Charge T: {:>4.0} K",
+                            core.turbo.compressor_outlet_temp
+                        )).monospace().small());
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
                 // ── Materials & Damage ───────────────────────────────────────
                 ui.collapsing(egui::RichText::new("Materials & Damage").strong(), |ui| {
                     material_selector(ui, "Block",        &mut core.config.materials.block);

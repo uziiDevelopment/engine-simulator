@@ -11,6 +11,7 @@ use std::f32::consts::PI;
 use std::sync::LazyLock;
 use super::material::{Material, CAST_IRON, ALUMINUM_ALLOY, STOCK_STEEL, FORGED_STEEL};
 use super::bearing::BearingConfig;
+use super::turbo::TurboConfig;
 
 // ── Per-engine preset submodules ──────────────────────────────────────────────
 pub mod single_cylinder_500cc;
@@ -154,6 +155,9 @@ pub struct EngineConfig {
 
     // ── Materials ────────────────────────────────────────────────────────────
     pub materials: MaterialsConfig,
+
+    // ── Forced induction ─────────────────────────────────────────────────────
+    pub turbo: TurboConfig,
 }
 
 // ─────────────────────────── Derived helpers ─────────────────────────────────
@@ -465,5 +469,6 @@ pub fn build_engine(
 
         cylinder_spacing: 0.10,
         materials: MaterialsConfig::default_for_bore(bore),
+        turbo: TurboConfig::default(),
     }
 }

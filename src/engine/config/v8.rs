@@ -51,5 +51,6 @@ pub fn preset() -> EngineConfig {
 
         cylinder_spacing: 0.11,
         materials: MaterialsConfig::default_for_bore(0.092),
+        turbo: crate::engine::turbo::TurboConfig::default(),
     }
 }

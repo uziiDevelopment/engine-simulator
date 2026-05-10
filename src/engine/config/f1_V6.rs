@@ -65,5 +65,21 @@ pub fn preset_f1_v6() -> EngineConfig {
 
         cylinder_spacing: 0.095, // Highly compact block
         materials: MaterialsConfig::default_for_bore(0.080),
+        turbo: crate::engine::turbo::TurboConfig {
+            enabled: true,
+            target_boost_pa: 1.5e5,    // 1.5 bar — modern F1 turbo era
+            shaft_inertia: 3.0e-6,     // light wheel — fast spool
+            max_shaft_rad_s: 13_000.0, // ~125k RPM
+            turbine_efficiency: 0.78,
+            compressor_efficiency: 0.78,
+            turbine_area: 0.00080,
+            wastegate_area: 0.00050,
+            impeller_radius: 0.034,
+            compressor_area: 0.00100,
+            boost_plenum_volume: 0.0015,
+            intercooler_effectiveness: 0.75,
+            bov_threshold_pa: 0.40e5,
+            blade_count: 12,
+        },
     }
 }
