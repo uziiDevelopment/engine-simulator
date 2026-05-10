@@ -133,12 +133,16 @@ pub fn spawn_engine_visuals(
     // The model's joining axis comes out of Blender along Y → ends up along -Z
     // in glTF/Bevy.  We apply a base orientation to map it to the simulator's
     // crankshaft axis (+X).  The pin offset (Blender Z) maps to +Y in Bevy.
-    const MODEL_PIN_RADIUS: f32 = 4.0; // distance from center to pin in model units
-    let desired_pin_radius = crank_radius * s;
-    let crank_model_scale = desired_pin_radius / MODEL_PIN_RADIUS;
+    const MODEL_PIN_RADIUS: f32 = 4.72;  // Distance from center to pin in model units (scaled by node)
+    const MODEL_LENGTH: f32 = 10.49;     // Total longitudinal length of one module throw (scaled)
+    const MODEL_PIN_OFFSET_X: f32 = 13.12; // Longitudinal: distance from GLB origin to pin center (scaled)
+    const MODEL_PIN_OFFSET_Z: f32 = 2.97;  // Lateral: distance from GLB origin to pin center (scaled)
+
+    let radial_scale = (crank_radius * s) / MODEL_PIN_RADIUS;
+    let length_scale = (cyl_spacing * s) / MODEL_LENGTH;
 
     // Base orientation: rotate model so its longitudinal axis (-Z) aligns with +X.
-    let base_orient = Quat::from_rotation_y(PI / 2.0);
+    let base_orient = Quat::from_rotation_y(std::f32::consts::PI / 2.0);
 
     let crank_scene: Handle<Scene> = asset_server.load("engine/crank/modular_crank.glb#Scene0");
 
@@ -161,40 +165,43 @@ pub fn spawn_engine_visuals(
         // Combined rotation: first orient the model (base_orient), then apply
         // the crank phase rotation around X so `connecting_rod_attachment`
         // lands at the correct angular position in the Y-Z plane.
-        let combined_rot = Quat::from_rotation_x(phi) * base_orient;
+        // We add PI to the phase to align the GLB pins with the piston TDC/BDC positions.
+        let combined_rot = Quat::from_rotation_x(phi + std::f32::consts::PI) * base_orient;
 
         commands.spawn((
             EngineVisual,
             Name::new(format!("Crank Module {}", pos + 1)),
             SceneBundle {
                 scene: crank_scene.clone(),
-                transform: Transform::from_xyz(x, 0.0, 0.0)
+                transform: Transform::from_xyz(x + MODEL_PIN_OFFSET_X * length_scale, 0.0, -MODEL_PIN_OFFSET_Z * radial_scale)
                     .with_rotation(combined_rot)
-                    .with_scale(Vec3::splat(crank_model_scale)),
+                    .with_scale(Vec3::new(length_scale, radial_scale, radial_scale)),
                 ..default()
             },
         )).set_parent(crank_entity);
     }
 
-    // ── Front pulley + flywheel + output shaft ──────────────────────────────
     let journal_count = match cfg.layout {
         crate::engine::EngineLayout::Inline | crate::engine::EngineLayout::Flat => num_cyl + 1,
         crate::engine::EngineLayout::V => (num_cyl / 2) + 1,
         crate::engine::EngineLayout::W { .. } => (num_cyl / 2) + 1,
     };
-    let half_len = (journal_count as f32 * 0.5) * cyl_spacing * s;
-    let front_x = -half_len;
-    let rear_x  =  half_len;
+
+    // Calculate exact ends of the crankshaft modular assembly to snap pulley/flywheel to them
+    // The module spans from Z=-178 to Z=-83 in GLB. 
+    // Relative to pin at Z=-118.75, Front is at -59.25 and Rear is at +35.75.
+    let front_x = cfg.cyl_visual_x(0) - 6.54 * length_scale;
+    let rear_x  = cfg.cyl_visual_x(num_cyl - 1) + 3.95 * length_scale;
 
     commands.spawn((EngineVisual, Name::new("Front Pulley"), PbrBundle {
         mesh: pulley_mesh.clone(), material: crank_mat.clone(),
-        transform: Transform::from_xyz(front_x - 0.04 * s, 0.0, 0.0).with_rotation(crank_axis_rot),
+        transform: Transform::from_xyz(front_x, 0.0, 0.0).with_rotation(crank_axis_rot),
         ..default()
     })).set_parent(crank_entity);
 
     let flywheel = commands.spawn((EngineVisual, Name::new("Flywheel"), PbrBundle {
         mesh: flywheel_mesh.clone(), material: flywheel_mat.clone(),
-        transform: Transform::from_xyz(rear_x + 0.04 * s, 0.0, 0.0).with_rotation(crank_axis_rot),
+        transform: Transform::from_xyz(rear_x, 0.0, 0.0).with_rotation(crank_axis_rot),
         ..default()
     })).set_parent(crank_entity).id();
 
