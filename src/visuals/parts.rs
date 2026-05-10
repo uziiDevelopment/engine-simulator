@@ -163,17 +163,17 @@ for pos in 0..pin_count {
         // Combined rotation: first orient the model (base_orient), then apply
         // the crank phase rotation around X so `connecting_rod_attachment`
         // lands at the correct angular position in the Y-Z plane.
-        // We add PI (180 degrees) to flip the pins so they match the piston TDC/BDC positions.
-        let combined_rot = Quat::from_rotation_x(phi + std::f32::consts::PI) * base_orient;
+        let combined_rot = Quat::from_rotation_x(phi) * base_orient;
 
-        commands.spawn((
+commands.spawn((
             EngineVisual,
             Name::new(format!("Crank Module {}", pos + 1)),
             SceneBundle {
                 scene: crank_scene.clone(),
                 transform: Transform::from_xyz(x, 0.0, 0.0)
                     .with_rotation(combined_rot)
-                    .with_scale(Vec3::new(length_scale, radial_scale, radial_scale)),
+                    // Fix: Apply radial scale to local X & Y, and length scale to local Z
+                    .with_scale(Vec3::new(radial_scale, radial_scale, length_scale)),
                 ..default()
             },
         )).set_parent(crank_entity);
