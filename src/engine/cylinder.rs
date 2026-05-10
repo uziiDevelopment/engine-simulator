@@ -626,6 +626,8 @@ pub struct MechanicalStep {
     pub friction_heat_w: f32,
     /// Thermal power transferred from the cylinder block into the oil this step (W).
     pub block_heat_to_oil_w: f32,
+    /// Thermal power transferred from the cylinder block into the coolant jacket (W).
+    pub block_heat_to_coolant_w: f32,
     /// Oil mass burned by blow-by past worn rings (kg).
     pub oil_consumed: f32,
     /// True if the cylinder friction-welded / galled to the block due to extreme heat.
@@ -646,9 +648,9 @@ fn piston_thermal_mass(cfg: &EngineConfig) -> f32 {
 /// Apply one substep of material-aware mechanics to a single cylinder.
 ///
 /// Reads (gas state already updated by `step_cylinder_cfg`) + the active oil
-/// state, writes the cylinder's wear, block / piston temperatures, and rod
-/// damage.  Returns the friction drag the caller should subtract from the net
-/// crankshaft torque, plus the heat to dump into the oil this step.
+/// and coolant states, writes the cylinder's wear, block / piston temperatures,
+/// and rod damage.  Returns the friction drag the caller should subtract from
+/// the net crankshaft torque, plus the heat to dump into the oil and coolant.
 pub fn apply_mechanical_step_cfg(
     cfg: &EngineConfig,
     cyl: &mut CylinderState,
@@ -660,6 +662,8 @@ pub fn apply_mechanical_step_cfg(
     oil: &OilState,
     oil_cfg: &OilConfig,
     wear_time_scale: f32,
+    coolant_temp: f32,
+    coolant_transfer_coeff: f32,
 ) -> MechanicalStep {
     let mats = &cfg.materials;
     let lube = oil.lubrication_factor(oil_cfg);
@@ -732,7 +736,17 @@ pub fn apply_mechanical_step_cfg(
     cyl.block_temp -= block_to_oil_K;
     let block_heat_to_oil_w = if dt > 0.0 { (block_to_oil_K * block_cap) / dt } else { 0.0 };
 
-    let block_to_air_K = (cyl.block_temp - T_ATM) * 0.04 * dt;
+    // Block → coolant water jacket (primary cooling path).
+    // `coolant_transfer_coeff` is zero when coolant is drained; only extracts
+    // heat if block is hotter than the coolant.
+    let block_to_coolant_K =
+        (cyl.block_temp - coolant_temp).max(0.0) * coolant_transfer_coeff * dt;
+    cyl.block_temp -= block_to_coolant_K;
+    let block_heat_to_coolant_w =
+        if dt > 0.0 { (block_to_coolant_K * block_cap) / dt } else { 0.0 };
+
+    // Small residual radiation / conduction through unwater-jacketed surfaces.
+    let block_to_air_K = (cyl.block_temp - T_ATM) * 0.008 * dt;
     cyl.block_temp -= block_to_air_K;
 
     cyl.block_temp = cyl.block_temp.clamp(T_ATM - 5.0, 2500.0);
@@ -767,6 +781,7 @@ pub fn apply_mechanical_step_cfg(
         friction_torque,
         friction_heat_w: friction_power,
         block_heat_to_oil_w,
+        block_heat_to_coolant_w,
         oil_consumed,
         seized,
         bearing_seized: false, // rod bearing is stepped separately in engine.rs

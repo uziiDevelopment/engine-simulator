@@ -39,6 +39,7 @@
 pub mod bearing;
 pub mod config;
 mod crank;
+pub mod cooling;
 mod cylinder;
 pub mod dyno;
 mod fuel;
@@ -52,6 +53,7 @@ mod valve;
 
 pub use bearing::*;
 pub use config::*;
+pub use cooling::*;
 pub use crank::*;
 pub use cylinder::*;
 pub use dyno::*;
@@ -162,12 +164,18 @@ pub fn engine_step(
         let mut total_friction_torque = 0.0_f32;
         let mut total_friction_heat_w = 0.0_f32;
         let mut total_block_heat_to_oil_w = 0.0_f32;
+        let mut total_block_heat_to_coolant_w = 0.0_f32;
         let mut total_oil_consumed = 0.0_f32;
         let mut any_seized = false;
         let mut new_seizure_reason = String::new();
         let mut substep_knock = 0.0_f32;
         let num_cyl = core.config.num_cylinders;
         let wear_time_scale = core.wear_time_scale;
+        // Snapshot coolant values before the split-borrow (plain f32 copies).
+        let coolant_temp = core.coolant.temperature;
+        let coolant_transfer_coeff =
+            core.coolant.block_transfer_factor(&core.coolant_config, omega);
+
         let EngineCore {
             ref config, ref fuel,
             ref mut cylinders,
@@ -221,10 +229,13 @@ pub fn engine_step(
                 oil,
                 oil_config,
                 wear_time_scale,
+                coolant_temp,
+                coolant_transfer_coeff,
             );
             total_friction_torque += mech.friction_torque;
             total_friction_heat_w += mech.friction_heat_w;
             total_block_heat_to_oil_w += mech.block_heat_to_oil_w;
+            total_block_heat_to_coolant_w += mech.block_heat_to_coolant_w;
             total_oil_consumed += mech.oil_consumed;
             
             // If the rod is snapped, it flails around and adds massive mechanical drag.
@@ -359,12 +370,38 @@ pub fn engine_step(
         }
         // Step the oil reservoir with the heat we just collected.
         // Split-borrow: take refs to the two disjoint fields explicitly.
-        let EngineCore { ref oil_config, ref mut oil, .. } = *core;
-        oil.step(oil_config, omega, total_friction_heat_w, total_block_heat_to_oil_w, dt);
-        if total_oil_consumed > 0.0 {
-            oil.consume(total_oil_consumed);
+        {
+            let EngineCore { ref oil_config, ref mut oil, .. } = *core;
+            oil.step(oil_config, omega, total_friction_heat_w, total_block_heat_to_oil_w, dt);
+            if total_oil_consumed > 0.0 {
+                oil.consume(total_oil_consumed);
+            }
         }
         last_friction_heat_w = total_friction_heat_w;
+
+        // Step the coolant loop.
+        {
+            let already_seized = core.engine_seized;
+            let EngineCore { ref coolant_config, ref mut coolant, .. } = *core;
+            coolant.step(coolant_config, omega, total_block_heat_to_coolant_w, dt);
+            if !already_seized && coolant.temperature >= coolant_config.boilover_k {
+                any_seized = true;
+                if new_seizure_reason.is_empty() {
+                    new_seizure_reason = format!(
+                        "Coolant boilover at {:.0} °C — head gasket failure",
+                        coolant.temperature - 273.15,
+                    );
+                }
+            }
+        }
+
+        // Overheat penalties: thermal expansion tightens clearances (extra
+        // friction) and pre-ignition/detonation derate combustion output.
+        let overheat = core.coolant.overheat_factor(&core.coolant_config);
+        if overheat > 0.0 {
+            total_friction_torque += overheat * 15.0 * num_cyl as f32;
+            total_torque_from_gas  *= 1.0 - overheat * 0.30;
+        }
 
         // Latch a permanent seizure if anyone locked up thermally.
         if any_seized && !core.engine_seized {
@@ -444,4 +481,6 @@ pub fn engine_step(
     core.last_frame_fuel_kg = total_fuel_burned;
     core.last_frame_work_j = total_work;
     core.friction_heat_smoothed += (last_friction_heat_w - core.friction_heat_smoothed) * 0.06;
+    core.coolant_temp_smoothed +=
+        (core.coolant.temperature - core.coolant_temp_smoothed) * alpha;
 }

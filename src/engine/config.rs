@@ -13,6 +13,8 @@ use super::material::{Material, CAST_IRON, ALUMINUM_ALLOY, STOCK_STEEL, FORGED_S
 use super::bearing::BearingConfig;
 
 // ── Per-engine preset submodules ──────────────────────────────────────────────
+pub mod single_cylinder_500cc;
+pub mod inline2;
 pub mod inline4;
 pub mod inline5;
 pub mod inline6;
@@ -298,6 +300,8 @@ use super::geometry::VIS_SCALE;
 // ══════════════════════════════════════════════════════════════════════════════
 
 pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
+    single_cylinder_500cc::preset(),
+    inline2::preset_250cc_twin(),
     inline4::preset(),
     inline5::preset(),
     inline6::preset(),

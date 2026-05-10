@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use std::f32::consts::TAU;
 
 use super::config::{EngineConfig, EngineLayout, ENGINES};
+use super::cooling::{CoolantConfig, CoolantState};
 use super::cylinder::CylinderState;
 use super::fuel::{Fuel, FUELS};
 use super::manifold::Manifold;
@@ -61,6 +62,10 @@ pub struct EngineCore {
     // ── Lubrication ─────────────────────────────────────────────────────────
     pub oil_config: OilConfig,
     pub oil:        OilState,
+
+    // ── Cooling ──────────────────────────────────────────────────────────────
+    pub coolant_config: CoolantConfig,
+    pub coolant:        CoolantState,
     /// Player-facing flag — becomes true as soon as any cylinder reaches a
     /// catastrophic-failure threshold (rod snap, wall worn out, melted piston,
     /// oil starvation).  Engine refuses to spin while set.
@@ -92,6 +97,8 @@ pub struct EngineCore {
     pub last_frame_work_j:         f32,
     /// Smoothed friction-heat going into the oil (W) — for the gauge.
     pub friction_heat_smoothed:    f32,
+    /// Smoothed coolant temperature (K) — for the gauge.
+    pub coolant_temp_smoothed:     f32,
 }
 
 impl EngineCore {
@@ -122,6 +129,9 @@ impl EngineCore {
         let oil_config = OilConfig::default();
         let oil = OilState::fresh(&oil_config);
 
+        let coolant_config = CoolantConfig::default();
+        let coolant = CoolantState::fresh(&coolant_config);
+
         let is_inline = config.layout == EngineLayout::Inline;
         let n_main = main_bearing_count(num_cyl, is_inline);
         let main_bearings: Vec<BearingState> = (0..n_main).map(|_| BearingState::fresh()).collect();
@@ -150,6 +160,8 @@ impl EngineCore {
 
             oil_config,
             oil,
+            coolant_config,
+            coolant,
             engine_seized: false,
             seizure_reason: String::new(),
             wear_time_scale: 1.0,
@@ -167,6 +179,7 @@ impl EngineCore {
             last_frame_fuel_kg: 0.0,
             last_frame_work_j: 0.0,
             friction_heat_smoothed: 0.0,
+            coolant_temp_smoothed: T_ATM,
         }
     }
 
@@ -230,6 +243,8 @@ impl EngineCore {
         self.seizure_reason.clear();
         self.oil_config = OilConfig::default();
         self.oil = OilState::fresh(&self.oil_config);
+        self.coolant_config = CoolantConfig::default();
+        self.coolant = CoolantState::fresh(&self.coolant_config);
 
         let is_inline = self.config.layout == EngineLayout::Inline;
         let n_main = main_bearing_count(num_cyl, is_inline);
@@ -246,5 +261,6 @@ impl EngineCore {
         self.last_frame_fuel_kg = 0.0;
         self.last_frame_work_j = 0.0;
         self.friction_heat_smoothed = 0.0;
+        self.coolant_temp_smoothed = T_ATM;
     }
 }

@@ -5,7 +5,9 @@
       "Bash(rustc --version)",
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\uziid\\\\Documents\\\\engine-simulator\" -Recurse -Include \"*.rs\")",
       "Bash(Select-Object -ExpandProperty FullName)",
-      "Bash(Get-ChildItem *)"
+      "Bash(Get-ChildItem *)",
+      "Read(//d/Development/**)",
+      "Bash(cargo build *)"
     ]
   }
 }

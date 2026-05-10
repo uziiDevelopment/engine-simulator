@@ -14,9 +14,9 @@ No test suite exists — validation is done by running the simulator.
 
 ## Architecture
 
-A real-time combustion engine simulator built on **Bevy 0.14** (ECS), with procedural audio via **rodio** and an immediate-mode UI via **bevy_egui**.
+A real-time combustion engine simulator built on **Bevy 0.14** (ECS, Edition 2024), with procedural audio via **rodio 0.18** and an immediate-mode UI via **bevy_egui 0.30**.
 
-`main.rs` registers five plugins in dependency order:
+`main.rs` registers plugins in dependency order:
 1. `EnginePlugin` — physics simulation
 2. `VisualsPlugin` — 3D rendering and animation
 3. `CameraPlugin` — orbit camera
@@ -36,15 +36,57 @@ Each Bevy frame runs 80 substeps for numerical stability at high RPM. The single
 
 Run-state machine lives in `engine/state.rs`: Off → Cranking (E key) → Running (self-sustains above ~220 RPM stall threshold).
 
-### Engine configurations (`src/engine/config.rs`)
+### Engine configurations (`src/engine/config.rs` + `src/engine/config/`)
 
-Four presets, all dynamically switchable at runtime (entire 3D engine is despawned and rebuilt by `VisualsPlugin` on change):
-- **Inline-4** — 2.0L, 86×86 mm, 8000 RPM redline
+Nine presets, all dynamically switchable at runtime (entire 3D engine is despawned and rebuilt by `VisualsPlugin` on change). Each preset lives in its own file under `src/engine/config/`:
+
+- **Inline-4** — 2.0L, 86×86 mm, 10.5:1 CR, 8000 RPM redline
 - **Inline-5** — 2.5L, 82.5×92.8 mm, 7200 RPM redline
-- **V8** — 5.0L, 90° bank, 8000 RPM redline
+- **Inline-6** — straight-six variant
+- **V8** — 5.0L, 90° bank angle, 8000 RPM redline
+- **V10** — V-layout ten-cylinder
+- **V12** — V-layout twelve-cylinder
+- **W16** — Bugatti-style narrow-angle W layout
 - **Flat-6** — 3.8L, 180° boxer, 7200 RPM redline
+- **F1 V6** — Formula 1 spec turbocharged V6
 
-Each `EngineConfig` includes a `MaterialsConfig` that assigns a `Material` (hardness, yield strength, friction, thermal conductivity, density, melting point) to block, cylinder wall, piston, piston rings, conrod, and each bearing class.
+Each `EngineConfig` includes a `MaterialsConfig` that assigns a `Material` to block, cylinder wall, piston, piston rings, conrod, and each bearing class. Adding a new preset means adding a `src/engine/config/name.rs` with a `preset()` function and registering it in `config.rs`.
+
+### Thermodynamic core (`src/engine/thermo.rs`)
+
+Primitives shared by all gas-handling code:
+- Ideal gas law: P = m·R·T / V
+- Atmosphere: 101,325 Pa, 295 K
+- Heat capacities: CP_AIR 1005, CV_AIR 718, CV_BURNED 950, CV_FUEL 1700 J/(kg·K); γ = 1.40 (air) / 1.28 (burned)
+- **Orifice flow** with choked-flow detection (critical pressure ratio = (2/(γ+1))^(γ/(γ-1)))
+- **Bidirectional flow**: `flow_between()` couples manifold volumes
+- **Wiebe burn**: `wiebe(delta, duration, a=5, m=2)` — SI combustion shape
+
+### Manifold and plumbing (`src/engine/manifold.rs`)
+
+- Intake plenum: 2.0 L; exhaust plenum: 1.5 L
+- Throttle: max area 0.0014 m²; idle bleed 1.2% of max at 0% throttle
+- Tailpipe: 0.0010 m² (10 cm²)
+- Mass-weighted enthalpy mixing on intake; Newton cooling on exhaust (1.6 K/s)
+- Flow signal is exponentially smoothed (0.6 decay + 0.4 current) for VFX
+
+### Crankshaft dynamics (`src/engine/crank.rs`)
+
+- Friction model: `FRICTION_BASE` (12.0 Nm) + viscous (0.045 Nm·s/rad) + windage (0.00012 Nm·s²/rad²)
+- Starter motor: 80 Nm peak, linear falloff; disengages at 600 RPM
+- Flywheel inertia: 0.18 kg·m²
+
+### Valve timing (`src/engine/valve.rs`)
+
+- Fixed sinusoidal cam profile (peak lift 10 mm): intake opens 354°/closes 580°, exhaust opens 140°/closes 366° (6° overlap)
+- Valve diameters: intake 34 mm, exhaust 30 mm
+- Effective discharge area: `min(curtain_area, seat_area)` — curtain area (π·D·lift) dominates at low lift
+
+### Slider-crank kinematics (`src/engine/geometry.rs`)
+
+- `piston_y(theta, cyl_idx)` — piston position from crank angle and cylinder index
+- `dpiston_dtheta()` — derivative used for torque conversion from pressure to crank torque
+- Visual scale: 8.0× for 3D rendering
 
 ### Fuel system (`src/engine/fuel.rs`)
 
@@ -88,8 +130,12 @@ Purely procedural — no samples. Exhaust pressure pulses from the physics loop 
 
 ### Visuals (`src/visuals/`)
 
-Dynamically spawns meshes for crank, connecting rods, pistons, and valves. Includes a particle system (`visuals/particles.rs`) for intake (blue), exhaust (orange), and combustion (fuel flame color) flow visualization. A damage view mode (`core.damage_view`) renders a FEA-style heatmap (blue→red) driven by wear and temperature.
+Three submodules: `parts.rs` (mesh spawning), `animate.rs` (per-frame transform updates for crank, rods, pistons, valves), `particles.rs` (VFX). Detects config changes via `config_generation` counter and fully rebuilds the scene on engine swap. Damage view mode (`core.damage_view`) renders a FEA-style heatmap (blue→red) driven by wear and temperature.
+
+### Camera (`src/camera.rs`)
+
+Orbit camera with critically-damped (no overshoot) yaw, pitch, and distance. RMB drag orbits; MMB/Shift+RMB pans; scroll zooms; F frames the engine. Pointer-over-egui check prevents input conflicts.
 
 ## Roadmap (`roadmap.md`)
 
-Planned features: forced induction, VVT/VTEC, ignition timing control, cooling system, and P-V diagram UI. Dyno and oil system are now implemented.
+Planned features: forced induction (turbo/supercharger), VVT/VTEC, ignition timing + knock, drivetrain (clutch/gearbox), cooling system, P-V diagram UI, and an engine builder UI for live parameter editing.

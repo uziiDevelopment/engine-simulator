@@ -5,7 +5,7 @@ use bevy_egui::{egui, EguiContexts};
 
 use crate::engine::{
     EngineCore, RunState, ENGINES, FUELS, MATERIAL_CATALOG, OIL_GRADES, P_ATM,
-    engine_count, fuel_count, BearingState, DynoState, DynoPhase,
+    engine_count, fuel_count, BearingState, DynoState, DynoPhase, CoolantConfig,
 };
 // Disambiguate from `bevy::prelude::Material` (a trait) — we want our
 // engine-physics `Material` struct.
@@ -287,6 +287,71 @@ fn ui_panel(
                 ui.separator();
                 ui.add_space(4.0);
 
+                // ── Cooling System ────────────────────────────────────────────
+                ui.collapsing(egui::RichText::new("Cooling System").strong(), |ui| {
+                    let coolant_c = core.coolant.temperature - 273.15;
+                    let therm_frac = core.coolant.thermostat_fraction;
+                    let therm_text = if therm_frac < 0.05 {
+                        egui::RichText::new("Thermostat: CLOSED")
+                            .color(egui::Color32::from_rgb(100, 180, 255))
+                    } else if therm_frac > 0.95 {
+                        egui::RichText::new("Thermostat: OPEN")
+                            .color(egui::Color32::from_rgb(255, 100, 100))
+                    } else {
+                        egui::RichText::new(format!("Thermostat: {:.0}% open", therm_frac * 100.0))
+                            .color(egui::Color32::from_rgb(255, 200, 100))
+                    };
+                    ui.label(therm_text.small());
+
+                    let fan_text = if core.coolant.fan_active {
+                        egui::RichText::new("Fan: ON").color(egui::Color32::from_rgb(100, 220, 160))
+                    } else {
+                        egui::RichText::new("Fan: off").color(egui::Color32::from_gray(140))
+                    };
+                    ui.label(fan_text.small());
+                    ui.label(egui::RichText::new(format!(
+                        "Coolant: {:.1} °C  ({:.2} kg)",
+                        coolant_c, core.coolant.mass_kg,
+                    )).small().monospace());
+
+                    ui.add_space(4.0);
+                    ui.spacing_mut().slider_width = ui.available_width() - 80.0;
+                    ui.add(
+                        egui::Slider::new(
+                            &mut core.coolant_config.radiator_dissipation,
+                            0.0..=4000.0,
+                        )
+                        .text("Radiator")
+                        .suffix(" W/K"),
+                    );
+                    ui.add(
+                        egui::Slider::new(
+                            &mut core.coolant_config.fan_dissipation,
+                            0.0..=2000.0,
+                        )
+                        .text("Fan boost")
+                        .suffix(" W/K"),
+                    );
+
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Drain Coolant").clicked() {
+                            core.coolant.drain();
+                        }
+                        if ui.button("Refill Coolant").clicked() {
+                            let cfg = core.coolant_config.clone();
+                            core.coolant.refill(&cfg);
+                        }
+                    });
+                    ui.label(egui::RichText::new(
+                        "Draining causes overheating. Boilover at 130 °C seizes the engine.",
+                    ).small().weak());
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
                 // ── Dyno Testing ─────────────────────────────────────────────
                 ui.collapsing(egui::RichText::new("Dyno Testing").strong(), |ui| {
                     // Status
@@ -500,6 +565,51 @@ fn ui_panel(
                     ui.end_row();
                     cell(ui, "Frict. Q",   &format!("{:>4.0} W",   core.friction_heat_smoothed));
                 });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // ── Cooling ──────────────────────────────────────────────────
+                ui.label(egui::RichText::new("Cooling").strong());
+                let coolant_c = core.coolant_temp_smoothed - 273.15;
+                let overheat = core.coolant.overheat_factor(&core.coolant_config);
+                let temp_color = if overheat > 0.5 {
+                    egui::Color32::from_rgb(255, 60, 60)
+                } else if overheat > 0.0 {
+                    egui::Color32::from_rgb(255, 180, 60)
+                } else {
+                    egui::Color32::from_gray(220)
+                };
+                egui::Grid::new("cooling_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Coolant").small());
+                        ui.colored_label(
+                            temp_color,
+                            egui::RichText::new(format!("{:>5.1} °C", coolant_c)).monospace(),
+                        );
+                    });
+                    let therm_frac = core.coolant.thermostat_fraction;
+                    let therm_txt = if therm_frac < 0.05 { "CLOSED" }
+                        else if therm_frac > 0.95 { "OPEN" }
+                        else { "PART." };
+                    cell(ui, "Therm.", therm_txt);
+                    ui.end_row();
+                    let fan_txt = if core.coolant.fan_active { "ON" } else { "off" };
+                    cell(ui, "Fan", fan_txt);
+                    let overheat_txt = if overheat <= 0.0 {
+                        "OK".to_string()
+                    } else {
+                        format!("! {:.0}% !", overheat * 100.0)
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Overheat").small());
+                        ui.colored_label(temp_color, egui::RichText::new(overheat_txt).monospace());
+                    });
+                    ui.end_row();
+                });
+                // Coolant temperature bar (cold=blue, warm=orange, hot=red)
+                coolant_temp_bar(ui, coolant_c, core.coolant_config.boilover_k - 273.15);
 
                 ui.add_space(8.0);
                 ui.separator();
@@ -815,6 +925,30 @@ fn material_selector(ui: &mut egui::Ui, label: &str, current: &mut PhysMaterial)
 }
 
 // ──────────────── 0..1 damage bar in the FEA gradient ───────────────────────
+fn coolant_temp_bar(ui: &mut egui::Ui, temp_c: f32, boilover_c: f32) {
+    let normal_max = boilover_c * 0.85; // scale so boilover is off the right edge
+    let frac = (temp_c / normal_max).clamp(0.0, 1.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 8.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 2.0, egui::Color32::from_gray(36));
+
+    let hot = (temp_c / (boilover_c - 10.0)).clamp(0.0, 1.0);
+    let r = (30.0 + 225.0 * hot) as u8;
+    let g = (120.0 - 100.0 * hot) as u8;
+    let b = (200.0 - 180.0 * hot) as u8;
+
+    let mut filled = rect;
+    filled.set_width(rect.width() * frac);
+    painter.rect_filled(filled, 2.0, egui::Color32::from_rgb(r, g, b));
+
+    // Boilover marker
+    let boil_x = rect.left() + rect.width() * (boilover_c / normal_max).min(1.0);
+    painter.line_segment(
+        [egui::pos2(boil_x, rect.top()), egui::pos2(boil_x, rect.bottom())],
+        egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 80, 80)),
+    );
+}
+
 fn wear_minibar(ui: &mut egui::Ui, tag: &str, value: f32) {
     let v = value.clamp(0.0, 1.0);
     ui.label(egui::RichText::new(tag).small().monospace());
