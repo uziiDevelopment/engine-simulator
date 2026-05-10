@@ -408,11 +408,11 @@ pub fn engine_step(
         if core.audio_enabled {
             let exhaust_pressure = core.exhaust.pressure();
             let base_sample = (exhaust_pressure - 101325.0) * 0.00005;
-            // Knock is injected as a sharp transient additive to the pressure wave.
-            // Scale chosen so a knock_impulse of 1.0 produces a clearly audible
-            // thud without completely overwhelming the exhaust note.
-            let knock_sample = substep_knock.clamp(0.0, 1.0) * 0.4;
-            audio_buffer.push((dt, base_sample + knock_sample));
+            // Knock is kept separate so the audio source can inject it after the
+            // LPF/AGC chain; mixing it into the pressure signal would cause the
+            // low-pass filter to smear it into inaudible mush.
+            let knock_sample = substep_knock.clamp(0.0, 1.0);
+            audio_buffer.push((dt, base_sample, knock_sample));
         }
     }
 

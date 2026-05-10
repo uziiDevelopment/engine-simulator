@@ -582,6 +582,58 @@ fn ui_panel(
                         )).small().monospace());
                     });
                 }
+
+                ui.add_space(6.0);
+                ui.collapsing(egui::RichText::new("Edit Damage").strong(), |ui| {
+                    ui.label(egui::RichText::new("Cylinders").small().strong());
+                    ui.add_space(2.0);
+                    for i in 0..core.num_cyl() {
+                        ui.label(egui::RichText::new(format!("Cyl {}", i + 1)).small().strong());
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Wall").small());
+                            ui.add(egui::Slider::new(&mut core.cylinders[i].wall_wear, 0.0..=1.0)
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Ring").small());
+                            ui.add(egui::Slider::new(&mut core.cylinders[i].ring_wear, 0.0..=1.0)
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Rod ").small());
+                            ui.add(egui::Slider::new(&mut core.cylinders[i].rod_damage, 0.0..=1.0)
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+                        });
+                        if let Some(brg) = core.rod_bearings.get_mut(i) {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Brg ").small());
+                                ui.add(egui::Slider::new(&mut brg.shell_wear, 0.0..=1.0)
+                                    .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+                            });
+                        }
+                        ui.add_space(3.0);
+                    }
+
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new("Main Bearings").small().strong());
+                    for i in 0..core.main_bearings.len() {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(format!("Main {}", i + 1)).small());
+                            ui.add(egui::Slider::new(&mut core.main_bearings[i].shell_wear, 0.0..=1.0)
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+                        });
+                    }
+
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new("Cam Bearings").small().strong());
+                    for i in 0..core.cam_bearings.len() {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(format!("Cam  {}", i + 1)).small());
+                            ui.add(egui::Slider::new(&mut core.cam_bearings[i].shell_wear, 0.0..=1.0)
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+                        });
+                    }
+                });
             });
         });
 

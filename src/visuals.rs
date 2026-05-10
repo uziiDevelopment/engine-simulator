@@ -51,6 +51,7 @@ fn rebuild_engine_visuals(
     engine_q: Query<Entity, With<EngineVisual>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
 ) {
     if vis_gen.0 == core.config_generation {
         return;
@@ -60,7 +61,7 @@ fn rebuild_engine_visuals(
         commands.entity(entity).despawn_recursive();
     }
     // Spawn new visuals based on current config
-    parts::spawn_engine_visuals(&mut commands, &core, &mut meshes, &mut materials);
+    parts::spawn_engine_visuals(&mut commands, &core, &mut meshes, &mut materials, &asset_server);
     vis_gen.0 = core.config_generation;
 }
 

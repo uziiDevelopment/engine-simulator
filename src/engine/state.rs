@@ -141,7 +141,7 @@ impl EngineCore {
             time_scale: 1.0,
             fuel: FUELS[fuel_idx.min(FUELS.len() - 1)],
             fuel_idx,
-            audio_enabled: true,
+            audio_enabled: false,
             particles_enabled: true,
             damage_view: false,
             cylinders,
@@ -152,7 +152,7 @@ impl EngineCore {
             oil,
             engine_seized: false,
             seizure_reason: String::new(),
-            wear_time_scale: 1_000.0,
+            wear_time_scale: 1.0,
 
             main_bearings,
             rod_bearings,

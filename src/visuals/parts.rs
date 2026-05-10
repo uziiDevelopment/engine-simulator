@@ -69,11 +69,11 @@ pub fn spawn_engine_visuals(
     core: &EngineCore,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
+    asset_server: &AssetServer,
 ) {
     let cfg = &core.config;
     let s = VIS_SCALE;
     let num_cyl = cfg.num_cylinders;
-    let crank_pos = cfg.crank_positions(); // number of throw positions along X
 
     // ── Materials ──────────────────────────────────────────────────────────
     // Most parts use a unique material handle so the damage animator can tint
@@ -103,9 +103,6 @@ pub fn spawn_engine_visuals(
     let bore = cfg.bore;
     let cyl_spacing = cfg.cylinder_spacing;
 
-    let main_journal_mesh  = meshes.add(Cylinder::new(0.026 * s, 0.045 * s));
-    let crank_pin_mesh     = meshes.add(Cylinder::new(0.024 * s, 0.060 * s));
-    let counterweight_mesh = meshes.add(Cuboid::new(0.025 * s, 0.11 * s, 0.06 * s));
     let piston_mesh        = meshes.add(Cylinder::new(bore * 0.49 * s, 0.075 * s));
     let rod_mesh           = meshes.add(Cuboid::new(0.020 * s, rod_length * s, 0.028 * s));
     let bore_mesh          = meshes.add(Cylinder::new(bore * 0.55 * s, 0.18 * s));
@@ -126,78 +123,65 @@ pub fn spawn_engine_visuals(
         EngineVisual, Crankshaft, SpatialBundle::default(), Name::new("Crankshaft"),
     )).id();
 
-    // Main bearing journals
-    // For Inline/Flat, length is related to number of cylinders or pairs.
-    let journal_count = match cfg.layout {
-        crate::engine::EngineLayout::Inline | crate::engine::EngineLayout::Flat => num_cyl + 1,
-        crate::engine::EngineLayout::V => (num_cyl / 2) + 1,
-        crate::engine::EngineLayout::W { .. } => (num_cyl / 2) + 1,
-    };
-    for i in 0..journal_count {
-        let x = (i as f32 - (journal_count as f32 - 1.0) * 0.5) * cyl_spacing * s;
-        commands.spawn((EngineVisual, Name::new(format!("Main Journal {}", i + 1)), PbrBundle {
-            mesh: main_journal_mesh.clone(),
-            material: crank_mat.clone(),
-            transform: Transform::from_xyz(x, 0.0, 0.0).with_rotation(crank_axis_rot),
-            ..default()
-        })).set_parent(crank_entity);
-    }
+    // ── Modular GLB crank pieces ────────────────────────────────────────────
+    // Each modular_crank.glb represents one crank throw.  We string them along
+    // the X axis (crankshaft longitudinal axis), one per pin position.
+    // Named nodes in the GLB:
+    //   - `connecting_rod_attachment`: where the connecting rod big-end sits
+    //   - `crank_joining_surface`:    face where adjacent modules meet
+    //
+    // The model's joining axis comes out of Blender along Y → ends up along -Z
+    // in glTF/Bevy.  We apply a base orientation to map it to the simulator's
+    // crankshaft axis (+X).  The pin offset (Blender Z) maps to +Y in Bevy.
+    const MODEL_PIN_RADIUS: f32 = 4.0; // distance from center to pin in model units
+    let desired_pin_radius = crank_radius * s;
+    let crank_model_scale = desired_pin_radius / MODEL_PIN_RADIUS;
 
-    // Crank throws — one per physical pin position.
+    // Base orientation: rotate model so its longitudinal axis (-Z) aligns with +X.
+    let base_orient = Quat::from_rotation_y(PI / 2.0);
+
+    let crank_scene: Handle<Scene> = asset_server.load("engine/crank/modular_crank.glb#Scene0");
+
+    // Number of crank throw positions along the X axis.
     let pin_count = match cfg.layout {
         crate::engine::EngineLayout::Inline | crate::engine::EngineLayout::Flat => num_cyl,
         crate::engine::EngineLayout::V => num_cyl / 2,
         crate::engine::EngineLayout::W { .. } => num_cyl / 2,
     };
+
     for pos in 0..pin_count {
         let cyl_idx = match cfg.layout {
             crate::engine::EngineLayout::Inline | crate::engine::EngineLayout::Flat => pos,
-            crate::engine::EngineLayout::V => pos * 2, // first cylinder of the pair
-            crate::engine::EngineLayout::W { .. } => pos * 2, // each pin serves 2 cylinders
+            crate::engine::EngineLayout::V => pos * 2,
+            crate::engine::EngineLayout::W { .. } => pos * 2,
         };
         let x = cfg.cyl_visual_x(cyl_idx);
         let phi = cfg.crank_phases[cyl_idx];
-        let pin_y = phi.cos() * crank_radius * s;
-        let pin_z = phi.sin() * crank_radius * s;
 
-        // Each crank pin gets its own material so the damage animator can tint
-        // it with the rod-stress of the cylinder hanging off it.
-        let pin_base = Color::srgb(0.82, 0.13, 0.13);
-        let pin_emissive = LinearRgba::BLACK;
-        let pin_mat = materials.add(StandardMaterial {
-            base_color: pin_base,
-            metallic: 0.7, perceptual_roughness: 0.32,
-            ..default()
-        });
+        // Combined rotation: first orient the model (base_orient), then apply
+        // the crank phase rotation around X so `connecting_rod_attachment`
+        // lands at the correct angular position in the Y-Z plane.
+        let combined_rot = Quat::from_rotation_x(phi) * base_orient;
+
         commands.spawn((
             EngineVisual,
-            Name::new(format!("Crank Pin {}", pos + 1)),
-            DamageVisual {
-                source: DamageSource::CrankPin(cyl_idx),
-                material: pin_mat.clone(),
-                base_color: pin_base,
-                base_emissive: pin_emissive,
-            },
-            PbrBundle {
-                mesh: crank_pin_mesh.clone(),
-                material: pin_mat,
-                transform: Transform::from_xyz(x, pin_y, pin_z).with_rotation(crank_axis_rot),
+            Name::new(format!("Crank Module {}", pos + 1)),
+            SceneBundle {
+                scene: crank_scene.clone(),
+                transform: Transform::from_xyz(x, 0.0, 0.0)
+                    .with_rotation(combined_rot)
+                    .with_scale(Vec3::splat(crank_model_scale)),
                 ..default()
             },
         )).set_parent(crank_entity);
-
-        for (w_idx, &dx) in [-0.034 * s, 0.034 * s].iter().enumerate() {
-            commands.spawn((EngineVisual, Name::new(format!("Counterweight {}-{}", pos + 1, w_idx + 1)), PbrBundle {
-                mesh: counterweight_mesh.clone(),
-                material: crank_mat.clone(),
-                transform: Transform::from_xyz(x + dx, pin_y * 0.5, pin_z * 0.5)
-                    .with_rotation(Quat::from_rotation_x(phi)),
-                ..default()
-            })).set_parent(crank_entity);
-        }
     }
 
-    // Front pulley + flywheel + output shaft
+    // ── Front pulley + flywheel + output shaft ──────────────────────────────
+    let journal_count = match cfg.layout {
+        crate::engine::EngineLayout::Inline | crate::engine::EngineLayout::Flat => num_cyl + 1,
+        crate::engine::EngineLayout::V => (num_cyl / 2) + 1,
+        crate::engine::EngineLayout::W { .. } => (num_cyl / 2) + 1,
+    };
     let half_len = (journal_count as f32 * 0.5) * cyl_spacing * s;
     let front_x = -half_len;
     let rear_x  =  half_len;

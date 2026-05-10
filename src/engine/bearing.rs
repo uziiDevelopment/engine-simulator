@@ -350,8 +350,8 @@ pub fn step_bearing(
         let cushion = (h_min / (state.journal_play + 1.0e-9)).clamp(0.0, 1.0);
         let released = (state.knock_accumulator + ke_impact) * (1.0 - cushion * 0.8);
 
-        // Normalise to 0..1: 50 J is a very heavy knock for a single pin.
-        knock_impulse = (released / 50.0).clamp(0.0, 1.0);
+        // Normalise to 0..1: 2 J is a solid knock for a single pin.
+        knock_impulse = (released / 2.0).clamp(0.0, 1.0);
         state.knock_accumulator = 0.0;
     } else {
         // Accumulate — cap so a stalled engine doesn't build infinite energy.

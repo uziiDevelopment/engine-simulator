@@ -10,7 +10,7 @@ impl Plugin for EngineAudioPlugin {
         // Initialize rodio output stream
         let (stream, stream_handle) = OutputStream::try_default().unwrap();
         
-        let shared_buffer = Arc::new(Mutex::new(Vec::<(f32, f32)>::with_capacity(8192)));
+        let shared_buffer = Arc::new(Mutex::new(Vec::<(f32, f32, f32)>::with_capacity(8192)));
         
         let audio_source = EngineAudioSource::new(shared_buffer.clone());
         stream_handle.play_raw(audio_source.convert_samples()).unwrap();
@@ -34,14 +34,15 @@ pub struct AudioStreamResource {
 
 #[derive(Resource, Clone)]
 pub struct AudioTx {
-    /// Shared buffer of (dt, pressure) tuples from the physics thread.
-    pub buffer: Arc<Mutex<Vec<(f32, f32)>>>,
+    /// Shared buffer of (dt, pressure, knock) tuples from the physics thread.
+    /// `knock` is a 0..1 transient impulse that bypasses the LPF/AGC.
+    pub buffer: Arc<Mutex<Vec<(f32, f32, f32)>>>,
 }
 
 /// A custom rodio Source that interpolates physics frames into a dense 44100 Hz audio stream.
 struct EngineAudioSource {
-    shared_buffer: Arc<Mutex<Vec<(f32, f32)>>>,
-    local_queue: Vec<(f32, f32)>,
+    shared_buffer: Arc<Mutex<Vec<(f32, f32, f32)>>>,
+    local_queue: Vec<(f32, f32, f32)>,
     
     // Interpolation state
     current_sample_dt: f32,
@@ -61,7 +62,7 @@ struct EngineAudioSource {
 }
 
 impl EngineAudioSource {
-    fn new(shared_buffer: Arc<Mutex<Vec<(f32, f32)>>>) -> Self {
+    fn new(shared_buffer: Arc<Mutex<Vec<(f32, f32, f32)>>>) -> Self {
         Self {
             shared_buffer,
             local_queue: Vec::with_capacity(8192),
@@ -108,7 +109,7 @@ impl Iterator for EngineAudioSource {
             self.current_sample_dt -= self.segment_dt;
             self.start_pressure = self.end_pressure;
             
-            let (dt, pressure) = self.local_queue.remove(0);
+            let (dt, pressure, _knock) = self.local_queue.remove(0);
             
             // Prevent a massive "pop" on startup if the starting pressure is highly pressurized
             if self.is_first_sample {
@@ -163,11 +164,22 @@ impl Iterator for EngineAudioSource {
         // 4. Drive & Soft-clip
         // Adds aggressive odd harmonics to emulate realistic engine distortion/growl
         let drive = 2.0; // Tweak this between 1.5 - 3.0 for varying aggression
-        let final_output = (normalized * drive).tanh() * 0.8;
+        // Knock transient: look ahead at the current segment's knock value and
+        // add it directly after the LPF/AGC so it is not smoothed away.
+        // Decay it over the segment so it produces a sharp click rather than
+        // a sustained addition.
+        let knock_raw = if !self.local_queue.is_empty() {
+            self.local_queue[0].2
+        } else {
+            0.0
+        };
+        let knock_contrib = knock_raw.clamp(0.0, 1.0) * 0.9;
+
+        let final_output = (normalized * drive).tanh() * 0.8 + knock_contrib;
         
         self.current_sample_dt += target_dt;
 
-        Some(final_output)
+        Some(final_output.clamp(-1.0, 1.0))
     }
 }
 

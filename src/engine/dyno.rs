@@ -270,6 +270,9 @@ pub fn dyno_system(
     // Force WOT while dyno is active
     core.throttle = 1.0;
 
+    // Ensure starter is off — dyno torque measurement must not include starter motor contribution
+    core.starter_active = false;
+
     match dyno.phase {
         DynoPhase::Idle | DynoPhase::Complete => {
             dyno.absorption_torque = 0.0;
