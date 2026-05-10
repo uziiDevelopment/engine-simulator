@@ -208,6 +208,9 @@ struct EngineAudioSource {
 
     // LCG noise generator
     noise_seed: u32,
+
+    // Starvation tracking — counts audio samples with no physics data
+    starvation_count: u32,
 }
 
 impl EngineAudioSource {
@@ -235,10 +238,11 @@ impl EngineAudioSource {
             conv:     ConvolutionFilter::new(initial_ir),
             noise_bp: Biquad::bandpass(1200.0, fs, 1.5),
             noise_lp: Biquad::lowpass(4000.0, fs, 0.707),
-            ir_blend: 0.5,
+            ir_blend: 0.25,
             peak_env: 1.0,
             smooth_gain: 1.0,
             noise_seed: 12345,
+            starvation_count: 0,
         }
     }
 }
@@ -271,9 +275,22 @@ impl Iterator for EngineAudioSource {
                 }
             }
             if self.local_queue.is_empty() {
+                self.starvation_count += 1;
+                // Brief gaps between Bevy frames are normal (~16 ms).
+                // Only go silent after 0.1 s of no data (audio truly disabled / engine off).
+                if self.starvation_count > 4410 {
+                    self.dc_blocked  *= 0.998;
+                    self.prev_raw    *= 0.999;
+                    self.peak_env     = 1.0;
+                    self.smooth_gain  = 1.0;
+                    self.current_sample_dt += target_dt;
+                    return Some(0.0);
+                }
+                // Hold last segment while waiting for the next frame's samples.
                 self.current_sample_dt = self.segment_dt;
                 break;
             }
+            self.starvation_count = 0;
 
             self.current_sample_dt -= self.segment_dt;
             self.start_exh   = self.end_exh;

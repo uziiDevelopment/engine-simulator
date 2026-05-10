@@ -14,6 +14,7 @@ use super::bearing::BearingConfig;
 
 // ── Per-engine preset submodules ──────────────────────────────────────────────
 pub mod single_cylinder_500cc;
+pub mod G13BA;
 pub mod inline2;
 pub mod inline4;
 pub mod inline5;
@@ -306,6 +307,7 @@ use super::geometry::VIS_SCALE;
 pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
     single_cylinder_500cc::preset(),
     inline2::preset_250cc_twin(),
+    G13BA::preset_suzuki_swift_1_3(),
     inline4::preset(),
     inline5::preset(),
     inline6::preset(),

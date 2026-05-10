@@ -21,6 +21,8 @@ pub fn preset_suzuki_swift_1_3() -> EngineConfig {
 
         // The G13 is a very small, lightweight aluminum engine 
         flywheel_inertia: 0.12, 
+        clutch_max_torque: 180.0,
+        drivetrain_inertia: 0.15,
         friction_base: 8.5,
         friction_viscous: 0.030,
         friction_windage: 0.00008,

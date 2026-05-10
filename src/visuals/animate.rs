@@ -38,8 +38,8 @@ pub fn animate_drivetrain(core: Res<EngineCore>, mut q: Query<&mut Transform, Wi
         t.rotation = Quat::from_rotation_x(relative_angle) * base_rot;
         
         // Local position relative to crankshaft origin.
-        // Flywheel is at (rear_x, 0, 0), so we place clutch just behind it.
-        t.translation = Vec3::new(rear_x + 0.025 * VIS_SCALE + throw, 0.0, 0.0);
+        // Flywheel is at (rear_x, 0, 0).
+        t.translation = Vec3::new(rear_x + 0.06 * VIS_SCALE + throw, 0.0, 0.0);
     }
 }
 
