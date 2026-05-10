@@ -63,7 +63,7 @@ pub fn setup_static_scene(
 }
 
 /// Spawns all engine visual entities dynamically based on the current config.
-/// Every entity gets the [`EngineVisual`] marker for easy bulk despawn.
+/// Every entity gets the[`EngineVisual`] marker for easy bulk despawn.
 pub fn spawn_engine_visuals(
     commands: &mut Commands,
     core: &EngineCore,
@@ -135,8 +135,6 @@ pub fn spawn_engine_visuals(
     // crankshaft axis (+X).  The pin offset (Blender Z) maps to +Y in Bevy.
     const MODEL_PIN_RADIUS: f32 = 4.72;  // Distance from center to pin in model units (scaled by node)
     const MODEL_LENGTH: f32 = 10.49;     // Total longitudinal length of one module throw (scaled)
-    const MODEL_PIN_OFFSET_X: f32 = 13.12; // Longitudinal: distance from GLB origin to pin center (scaled)
-    const MODEL_PIN_OFFSET_Z: f32 = 2.97;  // Lateral: distance from GLB origin to pin center (scaled)
 
     let radial_scale = (crank_radius * s) / MODEL_PIN_RADIUS;
     let length_scale = (cyl_spacing * s) / MODEL_LENGTH;
@@ -153,7 +151,7 @@ pub fn spawn_engine_visuals(
         crate::engine::EngineLayout::W { .. } => num_cyl / 2,
     };
 
-    for pos in 0..pin_count {
+for pos in 0..pin_count {
         let cyl_idx = match cfg.layout {
             crate::engine::EngineLayout::Inline | crate::engine::EngineLayout::Flat => pos,
             crate::engine::EngineLayout::V => pos * 2,
@@ -165,7 +163,7 @@ pub fn spawn_engine_visuals(
         // Combined rotation: first orient the model (base_orient), then apply
         // the crank phase rotation around X so `connecting_rod_attachment`
         // lands at the correct angular position in the Y-Z plane.
-        // We add PI to the phase to align the GLB pins with the piston TDC/BDC positions.
+        // We add PI (180 degrees) to flip the pins so they match the piston TDC/BDC positions.
         let combined_rot = Quat::from_rotation_x(phi + std::f32::consts::PI) * base_orient;
 
         commands.spawn((
@@ -173,7 +171,7 @@ pub fn spawn_engine_visuals(
             Name::new(format!("Crank Module {}", pos + 1)),
             SceneBundle {
                 scene: crank_scene.clone(),
-                transform: Transform::from_xyz(x + MODEL_PIN_OFFSET_X * length_scale, 0.0, -MODEL_PIN_OFFSET_Z * radial_scale)
+                transform: Transform::from_xyz(x, 0.0, 0.0)
                     .with_rotation(combined_rot)
                     .with_scale(Vec3::new(length_scale, radial_scale, radial_scale)),
                 ..default()
@@ -187,21 +185,20 @@ pub fn spawn_engine_visuals(
         crate::engine::EngineLayout::W { .. } => (num_cyl / 2) + 1,
     };
 
-    // Calculate exact ends of the crankshaft modular assembly to snap pulley/flywheel to them
-    // The module spans from Z=-178 to Z=-83 in GLB. 
-    // Relative to pin at Z=-118.75, Front is at -59.25 and Rear is at +35.75.
+    // Calculate exact ends of the crankshaft modular assembly to snap pulley/flywheel to them.
+    // These are the distances from the pin center to the front and rear mating surfaces.
     let front_x = cfg.cyl_visual_x(0) - 6.54 * length_scale;
     let rear_x  = cfg.cyl_visual_x(num_cyl - 1) + 3.95 * length_scale;
 
     commands.spawn((EngineVisual, Name::new("Front Pulley"), PbrBundle {
         mesh: pulley_mesh.clone(), material: crank_mat.clone(),
-        transform: Transform::from_xyz(front_x, 0.0, 0.0).with_rotation(crank_axis_rot),
+        transform: Transform::from_xyz(front_x - 0.04 * s, 0.0, 0.0).with_rotation(crank_axis_rot),
         ..default()
     })).set_parent(crank_entity);
 
     let flywheel = commands.spawn((EngineVisual, Name::new("Flywheel"), PbrBundle {
         mesh: flywheel_mesh.clone(), material: flywheel_mat.clone(),
-        transform: Transform::from_xyz(rear_x, 0.0, 0.0).with_rotation(crank_axis_rot),
+        transform: Transform::from_xyz(rear_x + 0.04 * s, 0.0, 0.0).with_rotation(crank_axis_rot),
         ..default()
     })).set_parent(crank_entity).id();
 
@@ -380,7 +377,7 @@ pub fn spawn_engine_visuals(
 
         // ── Valves: intake (−Z side) and exhaust (+Z side) relative to bank ─
         let valve_seat_y = rod_length * s + 0.13 * s;
-        for (kind, z_local) in [(ValveKind::Intake, -0.022 * s), (ValveKind::Exhaust, 0.022 * s)] {
+        for (kind, z_local) in[(ValveKind::Intake, -0.022 * s), (ValveKind::Exhaust, 0.022 * s)] {
             let stem_pos = tilt_position(x, valve_seat_y + 0.045 * s, z_local, tilt);
             let head_pos = tilt_position(x, valve_seat_y, z_local, tilt);
 
