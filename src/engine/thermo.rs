@@ -24,6 +24,10 @@ pub const CV_AIR:   f32 = 718.0;        // J/(kg·K)
 pub const CV_BURNED: f32 = 950.0;
 pub const CV_FUEL:   f32 = 1700.0;       // unburned fuel vapour, very rough
 
+// γ for burned products is lower than air due to triatomic CO2/H2O molecules.
+// ~1.28 at 1000 K, ~1.23 at 2000 K; we use a single representative value.
+pub const GAMMA_BURNED: f32 = 1.28;
+
 #[inline]
 pub fn cv_mix(air_frac: f32, fuel_frac: f32, burned_frac: f32) -> f32 {
     (CV_AIR * air_frac + CV_FUEL * fuel_frac + CV_BURNED * burned_frac).max(700.0)
@@ -32,6 +36,13 @@ pub fn cv_mix(air_frac: f32, fuel_frac: f32, burned_frac: f32) -> f32 {
 #[inline]
 pub fn cp_mix(air_frac: f32, fuel_frac: f32, burned_frac: f32) -> f32 {
     cv_mix(air_frac, fuel_frac, burned_frac) + R_AIR
+}
+
+/// Mass-weighted γ for a mixed air/fuel/burned-products charge.
+/// Used to get correct isentropic flow behaviour for exhaust-side orifice calculations.
+#[inline]
+pub fn gamma_mix(air_frac: f32, fuel_frac: f32, burned_frac: f32) -> f32 {
+    (GAMMA_AIR * (air_frac + fuel_frac) + GAMMA_BURNED * burned_frac).clamp(1.20, 1.40)
 }
 
 // ─────────────────────────── Compressible orifice flow ──────────────────────
@@ -104,11 +115,14 @@ pub fn flow_between(
 //
 // `delta` and `duration` are both in radians.
 
-pub fn wiebe(delta: f32, duration: f32) -> f32 {
+/// Wiebe burn-fraction function.
+/// `a` is the efficiency parameter (~5 for SI), `m` is the shape exponent
+/// (2.0 for smooth SI bell; 0.3 for diesel early-peak diffusion flame).
+pub fn wiebe(delta: f32, duration: f32, a: f32, m: f32) -> f32 {
     if delta <= 0.0 || duration <= 0.0 { return 0.0; }
     if delta >= duration { return 1.0; }
     let x = delta / duration;
-    1.0 - (-5.0 * x * x * x).exp()
+    1.0 - (-a * x.powf(m + 1.0)).exp()
 }
 
 // ─────────────────────────── Ideal-gas pressure helper ──────────────────────

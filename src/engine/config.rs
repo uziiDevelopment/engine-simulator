@@ -21,6 +21,7 @@ pub mod v10;
 pub mod v12;
 pub mod w16;
 pub mod flat6;
+pub mod f1_V6;
 
 #[derive(Clone, Debug)]
 pub struct MaterialsConfig {
@@ -305,6 +306,7 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
     v12::preset(),
     w16::preset(),
     flat6::preset(),
+    f1_V6::preset_f1_v6(),
 ]);
 
 #[inline]

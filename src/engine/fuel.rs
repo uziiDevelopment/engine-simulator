@@ -25,6 +25,12 @@ pub struct Fuel {
     /// At wide-open throttle, multiply injected fuel by this for power
     /// enrichment (think 12.5 AFR target on race gas, 1.0 AFR on nitro).
     pub power_enrichment: f32,
+    /// Wiebe efficiency parameter `a` (controls end-of-combustion completeness).
+    /// 5.0 is standard for SI engines.
+    pub wiebe_a: f32,
+    /// Wiebe shape exponent `m`.  SI engines use ~2.0 (smooth bell-shaped rate).
+    /// Diesel uses ~0.3 (sharp early peak matching diffusion-flame character).
+    pub wiebe_m: f32,
     /// Flame colour during the combustion flash, linear RGB.
     pub flame_color: [f32; 3],
 }
@@ -45,6 +51,8 @@ pub const FUELS: &[Fuel] = &[
         burn_duration_deg:  60.0,
         spark_advance_deg:  22.0,
         power_enrichment:   1.10,
+        wiebe_a:            5.0,
+        wiebe_m:            2.0,
         flame_color:        [1.00, 0.55, 0.18],
     },
     Fuel {
@@ -55,6 +63,8 @@ pub const FUELS: &[Fuel] = &[
         burn_duration_deg:  50.0,         // faster flame than gasoline
         spark_advance_deg:  26.0,
         power_enrichment:   1.15,
+        wiebe_a:            5.0,
+        wiebe_m:            2.0,
         flame_color:        [0.55, 0.85, 1.00],
     },
     Fuel {
@@ -65,6 +75,8 @@ pub const FUELS: &[Fuel] = &[
         burn_duration_deg:  45.0,
         spark_advance_deg:  30.0,
         power_enrichment:   1.20,
+        wiebe_a:            5.0,
+        wiebe_m:            2.0,
         flame_color:        [0.55, 0.95, 1.00],
     },
     Fuel {
@@ -75,6 +87,10 @@ pub const FUELS: &[Fuel] = &[
         burn_duration_deg:  75.0,         // diffusion combustion is slower
         spark_advance_deg:   8.0,         // simulated as compression-ignition timing
         power_enrichment:   1.00,
+        // m=0.3 gives a sharp early-peaking rate that better approximates
+        // the premixed+diffusion character of CI combustion vs. SI's m=2 bell.
+        wiebe_a:            5.0,
+        wiebe_m:            0.3,
         flame_color:        [1.00, 0.35, 0.10],
     },
     Fuel {
@@ -85,6 +101,8 @@ pub const FUELS: &[Fuel] = &[
         burn_duration_deg:  30.0,         // very fast laminar flame
         spark_advance_deg:  12.0,
         power_enrichment:   1.00,
+        wiebe_a:            5.0,
+        wiebe_m:            2.0,
         flame_color:        [0.70, 0.85, 1.00],
     },
     Fuel {
@@ -95,6 +113,8 @@ pub const FUELS: &[Fuel] = &[
         burn_duration_deg:  55.0,
         spark_advance_deg:  35.0,
         power_enrichment:   1.50,
+        wiebe_a:            5.0,
+        wiebe_m:            2.0,
         flame_color:        [0.85, 1.00, 0.50],
     },
 ];

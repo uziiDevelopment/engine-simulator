@@ -101,7 +101,7 @@ pub fn engine_step(
         return;
     }
 
-    let mut last_torque = 0.0_f32;
+    let mut torque_sum = 0.0_f32;  // accumulated across substeps for per-frame average
     let mut total_fuel_burned = 0.0_f32;
     let mut total_work = 0.0_f32;
     let mut last_friction_heat_w = 0.0_f32;
@@ -165,6 +165,7 @@ pub fn engine_step(
         let mut total_oil_consumed = 0.0_f32;
         let mut any_seized = false;
         let mut new_seizure_reason = String::new();
+        let mut substep_knock = 0.0_f32;
         let num_cyl = core.config.num_cylinders;
         let wear_time_scale = core.wear_time_scale;
         let EngineCore {
@@ -202,6 +203,7 @@ pub fn engine_step(
                 fourstroke_new,
                 dt,
                 combustion_enabled,
+                omega,
             );
             let derated = tau * compression_factor * cyl_alive;
             total_torque_from_gas += derated;
@@ -276,6 +278,7 @@ pub fn engine_step(
                 );
                 total_friction_torque += brg_result.friction_torque;
                 total_friction_heat_w += brg_result.heat_to_oil_w;
+                substep_knock += brg_result.knock_impulse;
                 if brg_result.seized {
                     any_seized = true;
                     if new_seizure_reason.is_empty() {
@@ -313,6 +316,7 @@ pub fn engine_step(
                 );
                 total_friction_torque += result.friction_torque;
                 total_friction_heat_w += result.heat_to_oil_w;
+                substep_knock += result.knock_impulse;
                 if result.seized {
                     any_seized = true;
                     if new_seizure_reason.is_empty() {
@@ -397,15 +401,18 @@ pub fn engine_step(
         core.angle = (core.angle + dtheta).rem_euclid(TAU);
         core.fourstroke_angle = (core.fourstroke_angle + dtheta).rem_euclid(2.0 * TAU);
 
-        last_torque = engine_flywheel_torque;
+        torque_sum += engine_flywheel_torque;
         total_work += tau_total * core.omega * dt;
 
-        // Push audio sample
+        // Push audio sample — exhaust pressure + bearing knock impulse spikes.
         if core.audio_enabled {
             let exhaust_pressure = core.exhaust.pressure();
-            // Atmospheric pressure is 101325.0 Pa. Scale it down for audio (-1.0 to 1.0)
-            let audio_sample = (exhaust_pressure - 101325.0) * 0.00005;
-            audio_buffer.push((dt, audio_sample));
+            let base_sample = (exhaust_pressure - 101325.0) * 0.00005;
+            // Knock is injected as a sharp transient additive to the pressure wave.
+            // Scale chosen so a knock_impulse of 1.0 produces a clearly audible
+            // thud without completely overwhelming the exhaust note.
+            let knock_sample = substep_knock.clamp(0.0, 1.0) * 0.4;
+            audio_buffer.push((dt, base_sample + knock_sample));
         }
     }
 
@@ -418,9 +425,12 @@ pub fn engine_step(
     }
 
     // ── Smooth telemetry for the UI ──────────────────────────────────────
+    // Average torque across all substeps (not just the last one) so the EMA
+    // input is the mean over a full frame of crank rotation, not one snapshot.
+    let avg_frame_torque = torque_sum / substeps as f32;
     let alpha = 0.06;
-    core.torque_smoothed += (last_torque - core.torque_smoothed) * alpha;
-    core.power_smoothed += ((last_torque * core.omega) - core.power_smoothed) * alpha;
+    core.torque_smoothed += (avg_frame_torque - core.torque_smoothed) * alpha;
+    core.power_smoothed += ((avg_frame_torque * core.omega) - core.power_smoothed) * alpha;
     core.map_smoothed += (core.intake.pressure() - core.map_smoothed) * alpha;
     core.exhaust_pressure_smoothed += (core.exhaust.pressure() - core.exhaust_pressure_smoothed) * alpha;
     core.exhaust_temp_smoothed += (core.exhaust.temperature - core.exhaust_temp_smoothed) * alpha;

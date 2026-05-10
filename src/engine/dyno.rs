@@ -74,6 +74,8 @@ pub struct DynoState {
     pub pid_kd: f32,
     pub pid_integral:   f32,
     pub pid_prev_error: f32,
+    /// Low-pass filtered derivative (prevents D-term spiking at frame rate).
+    pub pid_deriv_ema:  f32,
 
     /// The braking torque the dyno is currently applying (Nm, always ≥ 0).
     pub absorption_torque: f32,
@@ -107,11 +109,12 @@ impl Default for DynoState {
             accumulator_count:  0,
             sweep_elapsed:     0.0,
 
-            pid_kp: 0.8,
-            pid_ki: 0.3,
-            pid_kd: 0.02,
+            pid_kp: 1.2,
+            pid_ki: 0.4,
+            pid_kd: 0.005,
             pid_integral:   0.0,
             pid_prev_error: 0.0,
+            pid_deriv_ema:  0.0,
 
             absorption_torque: 0.0,
 
@@ -139,6 +142,7 @@ impl DynoState {
         self.sweep_elapsed = 0.0;
         self.pid_integral = 0.0;
         self.pid_prev_error = 0.0;
+        self.pid_deriv_ema = 0.0;
         self.absorption_torque = 0.0;
         self.results.clear();
         self.peak_hp = 0.0;
@@ -161,14 +165,48 @@ impl DynoState {
     fn pid_update(&mut self, current_rpm: f32, dt: f32) -> f32 {
         let error = current_rpm - self.target_rpm;
         self.pid_integral += error * dt;
-        // Anti-windup: clamp integral
-        self.pid_integral = self.pid_integral.clamp(-500.0, 500.0);
-        let derivative = if dt > 0.0 { (error - self.pid_prev_error) / dt } else { 0.0 };
+        self.pid_integral = self.pid_integral.clamp(-2000.0, 2000.0);
+
+        // Low-pass filtered derivative — prevents D-term spiking when the
+        // per-frame error jumps discontinuously at ~60 Hz (α=0.25 → τ≈3 frames).
+        let raw_deriv = if dt > 0.0 { (error - self.pid_prev_error) / dt } else { 0.0 };
+        self.pid_deriv_ema += (raw_deriv - self.pid_deriv_ema) * 0.25;
         self.pid_prev_error = error;
 
-        let output = self.pid_kp * error + self.pid_ki * self.pid_integral + self.pid_kd * derivative;
-        // Absorption torque can only brake (positive = opposing rotation)
+        let output = self.pid_kp * error
+            + self.pid_ki * self.pid_integral
+            + self.pid_kd * self.pid_deriv_ema;
         output.max(0.0)
+    }
+
+    /// Weighted moving average over the results to remove residual PID noise.
+    /// Three passes of a 1-2-1 kernel; boundary points are left unchanged.
+    fn smooth_results(&mut self) {
+        for _ in 0..3 {
+            let n = self.results.len();
+            if n < 3 { break; }
+            for i in 1..n - 1 {
+                let t = (self.results[i - 1].torque_nm
+                    + 2.0 * self.results[i].torque_nm
+                    + self.results[i + 1].torque_nm) * 0.25;
+                let p = (self.results[i - 1].power_hp
+                    + 2.0 * self.results[i].power_hp
+                    + self.results[i + 1].power_hp) * 0.25;
+                let kw = (self.results[i - 1].power_kw
+                    + 2.0 * self.results[i].power_kw
+                    + self.results[i + 1].power_kw) * 0.25;
+                self.results[i].torque_nm = t;
+                self.results[i].power_hp  = p;
+                self.results[i].power_kw  = kw;
+            }
+        }
+        // Recompute peaks from smoothed data.
+        self.peak_hp = 0.0; self.peak_hp_rpm = 0.0;
+        self.peak_torque = 0.0; self.peak_torque_rpm = 0.0;
+        for s in &self.results {
+            if s.power_hp > self.peak_hp   { self.peak_hp = s.power_hp; self.peak_hp_rpm = s.rpm; }
+            if s.torque_nm > self.peak_torque { self.peak_torque = s.torque_nm; self.peak_torque_rpm = s.rpm; }
+        }
     }
 
     /// Record a sample and track peaks.
@@ -265,9 +303,9 @@ pub fn dyno_system(
 
             // ── Check sweep completion ──────────────────────────────────────
             if dyno.target_rpm >= dyno.end_rpm {
-                // Record whatever is left in the accumulator as the final point
                 dyno.next_sample_rpm = dyno.end_rpm;
                 dyno.record_sample();
+                dyno.smooth_results();
 
                 dyno.phase = DynoPhase::Complete;
                 dyno.active = false;

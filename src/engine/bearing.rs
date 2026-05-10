@@ -105,6 +105,20 @@ pub struct BearingState {
     pub spun: bool,
     /// True when the shell material has melted / wiped out.
     pub wiped: bool,
+
+    // ── Knock / journal play ─────────────────────────────────────────────
+    /// Effective radial play grown by shell wear (m).
+    /// Fresh = design clearance; grows as Babbitt is consumed.
+    pub journal_play: f32,
+    /// Kinetic energy stored in the journal rattling across its play gap (J).
+    /// Accumulates when load reverses and the crank pin accelerates across
+    /// the clearance; discharged as an impulsive knock when it slams the
+    /// opposite shell face.
+    pub knock_accumulator: f32,
+    /// Smoothed knock intensity 0..1 — used by audio and telemetry.
+    pub knock_intensity: f32,
+    /// Sign of the load last substep (+1 or -1) — used to detect reversals.
+    pub last_load_sign: f32,
 }
 
 impl BearingState {
@@ -112,10 +126,14 @@ impl BearingState {
         Self {
             shell_wear: 0.0,
             temperature: super::thermo::T_ATM,
-            film_thickness: 0.0,
+            film_thickness: 0.000_020, // 20 µm — parked bearing, partial film
             sommerfeld: 0.0,
             spun: false,
             wiped: false,
+            journal_play: 0.0,
+            knock_accumulator: 0.0,
+            knock_intensity: 0.0,
+            last_load_sign: 1.0,
         }
     }
 
@@ -139,6 +157,9 @@ pub struct BearingStepResult {
     pub heat_to_oil_w: f32,
     /// True if this substep caused a seizure event.
     pub seized: bool,
+    /// Instantaneous knock impulse amplitude (0..1) — inject into audio as a
+    /// transient spike at this substep.  Zero when the bearing is healthy.
+    pub knock_impulse: f32,
 }
 
 /// Step a single journal bearing for one substep.
@@ -168,6 +189,7 @@ pub fn step_bearing(
             friction_torque: 500.0,   // locked-up drag
             heat_to_oil_w: 0.0,
             seized: true,
+            knock_impulse: 0.0,
         };
     }
 
@@ -203,7 +225,7 @@ pub fn step_bearing(
     // Static calculation would cause instant collapse under peak combustion.
     // Real oil films take time to squeeze out, protecting the bearing.
     let epsilon = 1.0 / (1.0 + 4.0 * sommerfeld.max(0.0));
-    let target_h_min = c * (1.0 - epsilon);
+    let target_h_min = (c * (1.0 - epsilon)).max(0.5e-6);
 
     // Squeeze out slowly, draw in quickly
     let alpha = if target_h_min < state.film_thickness {
@@ -277,7 +299,7 @@ pub fn step_bearing(
         3000.0,
     );
 
-    // ── Wear (Archard) ────────────────────────────────────────────────────
+    // ── Wear (Archard) ────────────────────────────────────────────────
     // Only the boundary-contact fraction causes wear.
     let boundary_frac = (1.0 - effective_regime).max(0.0);
     let dist = v_surface * dt;
@@ -291,7 +313,67 @@ pub fn step_bearing(
     state.shell_wear = (state.shell_wear + wear_vol * WEAR_NORM * scale)
         .clamp(0.0, 1.0);
 
-    // ── Failure checks ────────────────────────────────────────────────────
+    // ── Journal play (grown by wear) ──────────────────────────────────
+    // As the Babbitt is consumed the radial clearance grows from its design
+    // value toward clearance + shell_thickness.  Model this as:
+    //   play = wear_fraction × (shell_thickness / 2)
+    // A 2 mm shell half-worn doubles the design clearance.
+    let shell_half_thickness = 0.001_f32; // 1 mm half-thickness
+    state.journal_play = state.shell_wear * shell_half_thickness;
+
+    // ── Knock — load-reversal impact ──────────────────────────────────
+    // When combustion pushes the crank pin hard against one shell face and
+    // then the load drops or reverses (expansion → exhaust, or inertia
+    // overshoot), the journal rattles across the grown clearance gap and
+    // slams the opposite face.  The severity depends on:
+    //   * how large the play gap is (more wear → louder knock),
+    //   * how fast the load reversal is (high RPM → higher impact velocity),
+    //   * oil film left to cushion the blow.
+    let current_load_sign = if radial_load >= 0.0 { 1.0_f32 } else { -1.0_f32 };
+    let load_reversed = (current_load_sign - state.last_load_sign).abs() > 1.0;
+    state.last_load_sign = current_load_sign;
+
+    // Impact velocity of the journal crossing the play gap.
+    // v_impact ≈ omega × play (journal spinning across radial gap).
+    let v_impact = shaft_omega.abs() * state.journal_play;
+
+    // Effective mass of the crank pin assembly for kinetic energy estimate.
+    // Use a nominal 2 kg crank-pin + upper rod mass.
+    let m_pin: f32 = 2.0;
+    let ke_impact = 0.5 * m_pin * v_impact * v_impact; // Joules
+
+    // Accumulate energy while load is one-sided (journal pressed on shell).
+    // Discharge the stored energy as a knock impulse on reversal.
+    let mut knock_impulse = 0.0_f32;
+    if load_reversed && state.journal_play > 1.0e-6 {
+        // The oil film cushions the blow proportionally to film thickness.
+        let cushion = (h_min / (state.journal_play + 1.0e-9)).clamp(0.0, 1.0);
+        let released = (state.knock_accumulator + ke_impact) * (1.0 - cushion * 0.8);
+
+        // Normalise to 0..1: 50 J is a very heavy knock for a single pin.
+        knock_impulse = (released / 50.0).clamp(0.0, 1.0);
+        state.knock_accumulator = 0.0;
+    } else {
+        // Accumulate — cap so a stalled engine doesn't build infinite energy.
+        state.knock_accumulator = (state.knock_accumulator + ke_impact * dt)
+            .clamp(0.0, 100.0);
+    }
+
+    // Smooth knock_intensity with fast attack, slow decay for the gauge.
+    let ki_target = knock_impulse;
+    if ki_target > state.knock_intensity {
+        state.knock_intensity += (ki_target - state.knock_intensity) * (200.0 * dt).clamp(0.0, 1.0);
+    } else {
+        state.knock_intensity *= 1.0 - (8.0 * dt).clamp(0.0, 1.0);
+    }
+
+    // ── Extra drag from play — mechanical rattle ──────────────────────
+    // Loose journal hammers the shell each cycle, adding a load-proportional
+    // drag beyond normal Petroff friction.
+    let rattle_drag_torque = state.knock_intensity * w * 0.005 * r;
+    let friction_torque = friction_torque + rattle_drag_torque;
+
+    // ── Failure checks ────────────────────────────────────────────────
     // Wipe-out: shell material melts.
     if state.temperature > cfg.shell_material.melting_point {
         state.wiped = true;
@@ -313,6 +395,7 @@ pub fn step_bearing(
         // in the same substep).
         heat_to_oil_w: (friction_power - heat_to_shell_w).max(0.0),
         seized,
+        knock_impulse,
     }
 }
 

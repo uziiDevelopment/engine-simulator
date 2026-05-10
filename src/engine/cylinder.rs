@@ -207,6 +207,11 @@ pub fn step_cylinder(
     //
     //   intake:  positive `m_dot_in`  = manifold → cyl
     //   exhaust: positive `m_dot_out` = cyl → manifold
+    //
+    // Bug 1 fix: exhaust flow uses cylinder's actual γ (burned products have
+    // lower γ ~1.28 vs air's 1.40), which changes choked-flow mass flux by ~8%.
+    let gamma_cyl = gamma_mix(cyl.air_frac, cyl.fuel_frac, cyl.burned_frac);
+
     let m_dot_in = if a_intake > 0.0 {
         flow_between(
             intake.pressure(), intake.temperature,
@@ -219,7 +224,7 @@ pub fn step_cylinder(
         flow_between(
             p_old, cyl.temperature,
             exhaust.pressure(), exhaust.temperature,
-            a_exhaust, GAMMA_AIR, R_AIR,
+            a_exhaust, gamma_cyl, R_AIR,
         )
     } else { 0.0 };
 
@@ -259,12 +264,18 @@ pub fn step_cylinder(
     }
 
     // ── Wiebe heat release ─────────────────────────────────────────────────
+    // Bug 2 fix: snapshot cv *before* updating composition so the initial
+    // internal-energy calculation uses pre-combustion cv, not post-combustion cv.
+    let cv_before = cyl.cv();
+
     let mut heat_release = 0.0_f32;
     if cyl.burning {
         let burn_dur = fuel.burn_duration_deg.to_radians();
         let mut delta = phase_4s - cyl.crank_at_spark;
         if delta < 0.0 { delta += 4.0 * PI; }
-        let new_progress = wiebe(delta, burn_dur).min(1.0);
+        // Bug 3 fix: use fuel-specific Wiebe shape parameters (diesel uses m=0.3
+        // for sharper early peak vs. SI's m=2.0 smooth bell).
+        let new_progress = wiebe(delta, burn_dur, fuel.wiebe_a, fuel.wiebe_m).min(1.0);
         let dxb = (new_progress - cyl.burn_progress).max(0.0);
         cyl.burn_progress = new_progress;
 
@@ -286,12 +297,14 @@ pub fn step_cylinder(
 
     // ── Heat loss to walls ─────────────────────────────────────────────────
     //
-    // Quick-and-dirty Woschni-style coefficient.  Real Woschni uses speed and
-    // pressure; we just scale with surface area, ΔT and fix a coefficient.
+    // Bug 4 partial fix: add bore and temperature scaling from Woschni.
+    // Normalized so that at bore=86mm, T=800K the result equals the old formula.
+    // Velocity term omitted here (no omega in legacy path); step_cylinder_cfg has it.
     let wall_temp = 410.0; // K (hot block)
-    // Scale h_w with pressure to roughly mimic Woschni.
     let p_ratio = (p_old / P_ATM).max(1.0);
-    let h_w = 130.0 * p_ratio.powf(0.8);
+    let bore_factor = (0.086_f32 / BORE).powf(0.2);
+    let temp_factor = (800.0_f32 / cyl.temperature.max(200.0)).powf(0.55);
+    let h_w = 130.0 * p_ratio.powf(0.8) * bore_factor * temp_factor;
     let surface_area = PI * BORE * (STROKE_TOP - piston_y(angle_new, cyl_idx)).max(0.0)
         + 2.0 * PISTON_AREA;
     let q_wall = h_w * surface_area * (cyl.temperature - wall_temp) * dt;
@@ -313,7 +326,8 @@ pub fn step_cylinder(
     let energy_in  = if dm_in  > 0.0 { h_in_per_kg  * dm_in  } else { h_cyl_per_kg * dm_in  };
     let energy_out = if dm_out > 0.0 { h_cyl_per_kg * dm_out } else { h_exh_per_kg * dm_out };
 
-    let internal_energy = cyl.mass * cyl.cv() * cyl.temperature;
+    // Bug 2 fix: use pre-combustion cv for initial internal energy.
+    let internal_energy = cyl.mass * cv_before * cyl.temperature;
     let new_internal_energy = internal_energy + heat_release - q_wall - work + energy_in - energy_out;
 
     // ── Mass + composition update ──────────────────────────────────────────
@@ -401,6 +415,7 @@ pub fn step_cylinder_cfg(
     fourstroke_new: f32,
     dt: f32,
     combustion_enabled: bool,
+    omega: f32,
 ) -> (f32, f32) {
     // ── Volume + valve geometry ────────────────────────────────────────────
     let v_old = cfg.cyl_volume(angle_old, cyl_idx);
@@ -415,6 +430,10 @@ pub fn step_cylinder_cfg(
     let p_old = cyl.pressure_at(v_old);
 
     // ── Compressible mass flow through valves ──────────────────────────────
+    // Bug 1 fix: exhaust flow uses the cylinder's actual γ (burned products
+    // have γ ~1.28 vs. air's 1.40, changing choked mass flux by ~8%).
+    let gamma_cyl = gamma_mix(cyl.air_frac, cyl.fuel_frac, cyl.burned_frac);
+
     let m_dot_in = if a_intake > 0.0 {
         flow_between(
             intake.pressure(), intake.temperature,
@@ -427,7 +446,7 @@ pub fn step_cylinder_cfg(
         flow_between(
             p_old, cyl.temperature,
             exhaust.pressure(), exhaust.temperature,
-            a_exhaust, GAMMA_AIR, R_AIR,
+            a_exhaust, gamma_cyl, R_AIR,
         )
     } else { 0.0 };
 
@@ -447,7 +466,13 @@ pub fn step_cylinder_cfg(
         cyl.burn_progress = 0.0;
     }
 
-    let spark_phase = 4.0 * PI - fuel.spark_advance_deg.to_radians();
+    // Bug 5 fix: RPM-dependent spark advance.
+    // Flame propagation takes roughly constant time, so advance must increase
+    // with RPM.  Ramps from 8° at idle to fuel.spark_advance_deg at 4000 RPM.
+    let rpm = omega.abs() * 30.0 / PI;
+    let rpm_factor = ((rpm - 1000.0) / 3000.0).clamp(0.0, 1.0);
+    let advance_deg = 8.0 + (fuel.spark_advance_deg - 8.0) * rpm_factor;
+    let spark_phase = 4.0 * PI - advance_deg.to_radians();
     if cyl.spark_armed && phase_4s >= spark_phase && phase_4s < 4.0 * PI {
         if combustion_enabled {
             cyl.burning = true;
@@ -460,12 +485,19 @@ pub fn step_cylinder_cfg(
     }
 
     // ── Wiebe heat release ─────────────────────────────────────────────────
+    // Bug 2 fix: snapshot cv *before* updating composition so the initial
+    // internal-energy uses pre-combustion cv; post-combustion cv is only used
+    // to derive the final temperature (consistent with the new state).
+    let cv_before = cyl.cv();
+
     let mut heat_release = 0.0_f32;
     if cyl.burning {
         let burn_dur = fuel.burn_duration_deg.to_radians();
         let mut delta = phase_4s - cyl.crank_at_spark;
         if delta < 0.0 { delta += 4.0 * PI; }
-        let new_progress = wiebe(delta, burn_dur).min(1.0);
+        // Bug 3 fix: use fuel-specific Wiebe parameters (diesel: m=0.3 for
+        // sharper early-peak diffusion shape; SI fuels: m=2.0 smooth bell).
+        let new_progress = wiebe(delta, burn_dur, fuel.wiebe_a, fuel.wiebe_m).min(1.0);
         let dxb = (new_progress - cyl.burn_progress).max(0.0);
         cyl.burn_progress = new_progress;
 
@@ -487,19 +519,22 @@ pub fn step_cylinder_cfg(
 
     // ── Heat loss to walls ─────────────────────────────────────────────────
     //
-    // Wall temperature is the dynamic per-cylinder block-slice temperature
-    // (`cyl.block_temp`), updated downstream by `apply_mechanical_step_cfg`
-    // along with friction heat and dissipation to oil + air.
+    // Bug 4 fix: proper Woschni form with bore, temperature, and piston-velocity
+    // corrections.  Normalized at bore=86mm, T=800K, w=15m/s so that at those
+    // reference conditions the result equals the old simpler formula.
     let wall_temp = cyl.block_temp;
-    // Scale h_w with pressure to roughly mimic Woschni heat transfer correlation
     let p_ratio = (p_old / P_ATM).max(1.0);
-    let h_w = 130.0 * p_ratio.powf(0.8);
     let bore = cfg.bore;
     let piston_area = cfg.piston_area();
+    let bore_factor = (0.086_f32 / bore).powf(0.2);
+    let temp_factor = (800.0_f32 / cyl.temperature.max(200.0)).powf(0.55);
+    let mean_piston_speed = omega.abs() * cfg.stroke / PI;
+    let w = (2.28 * mean_piston_speed).max(1.0);
+    let w_factor = (w / 15.0_f32).powf(0.8);
+    let h_w = 130.0 * p_ratio.powf(0.8) * bore_factor * temp_factor * w_factor;
     let surface_area = PI * bore * (cfg.stroke_top() - cfg.piston_y(angle_new, cyl_idx)).max(0.0)
         + 2.0 * piston_area;
     let q_wall = h_w * surface_area * (cyl.temperature - wall_temp) * dt;
-    // Add the wall-bound combustion heat to the block thermal mass.
     let block_thermal_mass =
         1.5 * cfg.materials.block.specific_heat.max(100.0); // ~1.5 kg per cyl slice
     cyl.block_temp += q_wall / block_thermal_mass;
@@ -517,7 +552,8 @@ pub fn step_cylinder_cfg(
     let energy_in  = if dm_in  > 0.0 { h_in_per_kg  * dm_in  } else { h_cyl_per_kg * dm_in  };
     let energy_out = if dm_out > 0.0 { h_cyl_per_kg * dm_out } else { h_exh_per_kg * dm_out };
 
-    let internal_energy = cyl.mass * cyl.cv() * cyl.temperature;
+    // Bug 2 fix: use pre-combustion cv for initial internal energy.
+    let internal_energy = cyl.mass * cv_before * cyl.temperature;
     let new_internal_energy = internal_energy + heat_release - q_wall - work + energy_in - energy_out;
 
     // ── Mass + composition update ──────────────────────────────────────────
