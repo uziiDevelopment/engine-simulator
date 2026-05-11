@@ -65,23 +65,25 @@ pub fn preset_f1_v6() -> EngineConfig {
 
         cylinder_spacing: 0.095, // Highly compact block
         materials: MaterialsConfig::default_for_bore(0.080),
-        turbo: crate::engine::turbo::TurboConfig {
-            enabled: true,
-            target_boost_pa: 1.5e5,    // 1.5 bar — modern F1 turbo era
-            shaft_inertia: 1.2e-5,     // lightweight ceramic wheel, but properly
-                                       // scaled for 6-cyl exhaust energy
-            max_shaft_rad_s: 13_000.0, // ~125k RPM
-            turbine_efficiency: 0.78,
-            compressor_efficiency: 0.78,
-            // Areas scaled for 1.6L (ratio ≈ 3.2× from 500cc base):
-            turbine_area: 0.00190,     // 0.0006 × 3.2 — handles 6-cyl exhaust flow
-            wastegate_area: 0.00128,   // 0.0004 × 3.2
-            impeller_radius: 0.037,    // 0.030 × 3.2^0.2
-            compressor_area: 0.00256,  // 0.0008 × 3.2
-            boost_plenum_volume: 0.0024,
-            intercooler_effectiveness: 0.75,
-            bov_threshold_pa: 0.40e5,
-            blade_count: 12,
-        },
+        turbos: vec![
+            crate::engine::turbo::TurboConfig {
+                enabled: true,
+                target_boost_pa: 1.5e5,    // 1.5 bar — modern F1 turbo era
+                shaft_inertia: 1.0e-5,     // lightweight ceramic wheel — faster spool
+                                           // than generic (1.6e-5 for ratio 3.2)
+                max_shaft_rad_s: 20_000.0,
+                turbine_efficiency: 0.78,
+                compressor_efficiency: 0.78,
+                // ratio=3.2, sqrt(3.2)=1.789:
+                turbine_area: 0.00107,     // 0.0006 × √3.2 — undersized for back-pressure
+                wastegate_area: 0.00128,   // 0.0004 × 3.2  — linear for boost control
+                impeller_radius: 0.030,
+                compressor_area: 0.00256,  // 0.0008 × 3.2
+                boost_plenum_volume: 0.0025, // 0.001 × 3.2^0.7
+                intercooler_effectiveness: 0.75,
+                bov_threshold_pa: 0.40e5,
+                blade_count: 12,
+            },
+        ],
     }
 }

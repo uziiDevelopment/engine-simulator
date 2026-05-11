@@ -213,47 +213,68 @@ fn ui_panel(
 
                 // ── Turbocharger ─────────────────────────────────────────────
                 ui.collapsing(egui::RichText::new("Turbocharger").strong(), |ui| {
-                    let mut enabled = core.config.turbo.enabled;
-                    if ui.checkbox(&mut enabled, "Enable Turbo").changed() {
-                        core.config.turbo.enabled = enabled;
-                        // Reset turbo state and trigger visual rebuild.
-                        core.turbo = crate::engine::turbo::TurboState::fresh(&core.config.turbo);
+                    // For multi-turbo: control first turbo config, show aggregate data
+                    let turbo_count = core.config.turbos.len();
+                    let has_turbo = turbo_count > 0;
+
+                    let mut enabled = core.config.turbo_enabled();
+                    if ui.checkbox(&mut enabled, format!("Enable Turbo ({}x)", turbo_count)).changed() {
+                        // Toggle first turbo's enabled state
+                        if let Some(first_turbo) = core.config.turbos.first_mut() {
+                            first_turbo.enabled = enabled;
+                        }
+                        // Reset turbo states and trigger visual rebuild.
+                        core.turbos = core.config.turbos.iter()
+                            .map(|cfg| crate::engine::turbo::TurboState::fresh(cfg))
+                            .collect();
                         core.config_generation += 1;
                     }
-                    if core.config.turbo.enabled {
+                    if core.config.turbo_enabled() {
                         ui.add_space(4.0);
-                        let mut target_psi = core.config.turbo.target_boost_pa / 6894.76;
-                        if ui.add(
-                            egui::Slider::new(&mut target_psi, 0.0..=36.0)
-                                .text("Target Boost")
-                                .custom_formatter(|v, _| format!("{:.1} psi", v))
-                        ).changed() {
-                            core.config.turbo.target_boost_pa = target_psi * 6894.76;
+                        // Control first turbo's target boost
+                        if let Some(first_cfg) = core.config.turbos.first_mut() {
+                            let mut target_psi = first_cfg.target_boost_pa / 6894.76;
+                            if ui.add(
+                                egui::Slider::new(&mut target_psi, 0.0..=36.0)
+                                    .text("Target Boost")
+                                    .custom_formatter(|v, _| format!("{:.1} psi", v))
+                            ).changed() {
+                                first_cfg.target_boost_pa = target_psi * 6894.76;
+                            }
+                            ui.add(
+                                egui::Slider::new(
+                                    &mut first_cfg.intercooler_effectiveness,
+                                    0.0..=1.0,
+                                )
+                                .text("Intercooler")
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+                            );
                         }
-                        ui.add(
-                            egui::Slider::new(
-                                &mut core.config.turbo.intercooler_effectiveness,
-                                0.0..=1.0,
-                            )
-                            .text("Intercooler")
-                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
-                        );
                         ui.add_space(4.0);
+                        // Show aggregate data from all turbos
+                        let total_shaft_rpm: f32 = core.turbos.iter().map(|t| t.shaft_rpm()).sum();
+                        let avg_shaft_rpm = if core.turbos.is_empty() { 0.0 } else { total_shaft_rpm / core.turbos.len() as f32 };
+                        let max_boost = core.turbos.iter().map(|t| t.boost_gauge_pa()).fold(0.0_f32, f32::max);
+                        let avg_wastegate = if core.turbos.is_empty() { 0.0 } else {
+                            core.turbos.iter().map(|t| t.wastegate_open_frac).sum::<f32>() / core.turbos.len() as f32
+                        };
+                        let max_temp = core.turbos.iter().map(|t| t.compressor_outlet_temp).fold(0.0_f32, f32::max);
+
                         ui.label(egui::RichText::new(format!(
-                            "Shaft: {:>6.0} RPM",
-                            core.turbo.shaft_rpm()
+                            "Shaft: {:>6.0} RPM (avg)",
+                            avg_shaft_rpm
                         )).monospace().small());
                         ui.label(egui::RichText::new(format!(
-                            "Boost: {:>+5.1} psi",
-                            core.turbo.boost_gauge_pa() / 6894.76
+                            "Boost: {:>+5.1} psi (max)",
+                            max_boost / 6894.76
                         )).monospace().small());
                         ui.label(egui::RichText::new(format!(
-                            "Wastegate: {:>3.0}%",
-                            core.turbo.wastegate_open_frac * 100.0
+                            "Wastegate: {:>3.0}% (avg)",
+                            avg_wastegate * 100.0
                         )).monospace().small());
                         ui.label(egui::RichText::new(format!(
-                            "Charge T: {:>4.0} K",
-                            core.turbo.compressor_outlet_temp
+                            "Charge T: {:>4.0} K (max)",
+                            max_temp
                         )).monospace().small());
                     }
                 });

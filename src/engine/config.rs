@@ -11,10 +11,12 @@ use std::f32::consts::PI;
 use std::sync::LazyLock;
 use super::material::{Material, CAST_IRON, ALUMINUM_ALLOY, STOCK_STEEL, FORGED_STEEL};
 use super::bearing::BearingConfig;
-use super::turbo::TurboConfig;
+pub use super::turbo::TurboConfig;
 
 // ── Per-engine preset submodules ──────────────────────────────────────────────
 pub mod single_cylinder_500cc;
+pub mod porscheM97;
+pub mod leonFR14TSI;
 pub mod G13BA;
 pub mod inline2;
 pub mod inline4;
@@ -157,7 +159,24 @@ pub struct EngineConfig {
     pub materials: MaterialsConfig,
 
     // ── Forced induction ─────────────────────────────────────────────────────
-    pub turbo: TurboConfig,
+    /// Up to 4 turbochargers (sequential or parallel arrangement).
+    /// Empty = naturally aspirated.
+    pub turbos: Vec<TurboConfig>,
+}
+
+impl EngineConfig {
+    /// Returns true if any turbo is enabled.
+    pub fn turbo_enabled(&self) -> bool {
+        self.turbos.iter().any(|t| t.enabled)
+    }
+
+    /// Total target boost from all enabled turbos (summed).
+    pub fn total_target_boost_pa(&self) -> f32 {
+        self.turbos.iter()
+            .filter(|t| t.enabled)
+            .map(|t| t.target_boost_pa)
+            .sum()
+    }
 }
 
 // ─────────────────────────── Derived helpers ─────────────────────────────────
@@ -320,6 +339,7 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
     single_cylinder_500cc::preset(),
     inline2::preset_250cc_twin(),
     G13BA::preset_suzuki_swift_1_3(),
+    leonFR14TSI::preset(),
     inline4::preset(),
     inline5::preset(),
     inline6::preset(),
@@ -328,6 +348,7 @@ pub static ENGINES: LazyLock<Vec<EngineConfig>> = LazyLock::new(|| vec![
     v12::preset(),
     w16::preset(),
     flat6::preset(),
+    porscheM97::preset(),
     f1_V6::preset_f1_v6(),
 ]);
 
@@ -469,8 +490,10 @@ pub fn build_engine(
 
         cylinder_spacing: 0.10,
         materials: MaterialsConfig::default_for_bore(bore),
-        turbo: TurboConfig::for_displacement(
-            PI * bore * bore * 0.25 * stroke * num_cylinders as f32,
-        ),
+        turbos: vec![
+            TurboConfig::for_displacement(
+                PI * bore * bore * 0.25 * stroke * num_cylinders as f32,
+            ),
+        ],
     }
 }

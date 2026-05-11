@@ -187,17 +187,36 @@ pub fn engine_step(
             ref config, ref fuel,
             ref mut cylinders,
             ref mut intake, ref mut exhaust,
-            ref mut turbo,
+            ref mut turbos,
             ref oil_config, ref oil,
             ..
         } = *core;
 
-        if config.turbo.enabled {
-            // Turbo path: turbine pulls from exhaust + spins compressor that
-            // fills the boost plenum.  Throttle then bleeds boost into intake.
-            turbo::step_turbo(&config.turbo, turbo, intake, exhaust, throttle_eff, dt);
+        if config.turbo_enabled() {
+            // Turbo path: each turbo's turbine pulls from exhaust + spins compressor.
+            // Multiple turbos work in parallel, each contributing to total boost.
             let throttle_area = config.throttle_area(throttle_eff);
-            turbo::throttle_flow_boosted(throttle_area, &mut turbo.boost, intake, throttle_eff, dt);
+
+            // Find the first enabled turbo index for throttle flow
+            let first_enabled_idx = config.turbos.iter()
+                .enumerate()
+                .find(|(i, cfg)| cfg.enabled && *i < turbos.len())
+                .map(|(i, _)| i);
+
+            // Step all enabled turbos
+            for (i, turbo) in turbos.iter_mut().enumerate() {
+                if i < config.turbos.len() && config.turbos[i].enabled {
+                    turbo::step_turbo(&config.turbos[i], turbo, intake, exhaust, throttle_eff, dt);
+                }
+            }
+
+            // Use the first enabled turbo's boost plenum for throttle flow
+            // (in a real multi-turbo setup, they would merge into a common plenum)
+            if let Some(idx) = first_enabled_idx {
+                if let Some(turbo) = turbos.get_mut(idx) {
+                    turbo::throttle_flow_boosted(throttle_area, &mut turbo.boost, intake, throttle_eff, dt);
+                }
+            }
         } else {
             manifold::throttle_flow_cfg(config, intake, throttle_eff, dt);
             manifold::exhaust_to_atmosphere_cfg(config, exhaust, dt);
@@ -491,18 +510,25 @@ pub fn engine_step(
         total_work += tau_total * core.omega * dt;
 
         // Push audio sample — raw pressures + RPM + bearing knock impulse.
+        // For multi-turbo, use the first enabled turbo's data for audio.
         if core.audio_enabled {
+            let first_turbo = core.turbos.iter().enumerate()
+                .find(|(i, _)| core.config.turbos.get(*i).map(|c| c.enabled).unwrap_or(false));
+
             audio_buffer.push(crate::audio::AudioSample {
                 dt,
                 exhaust_pressure: core.exhaust.pressure(),
                 intake_pressure:  core.intake.pressure(),
                 knock:            substep_knock.clamp(0.0, 1.0),
                 rpm:              core.rpm(),
-                turbo_enabled:    core.config.turbo.enabled,
-                turbo_shaft_rpm:  core.turbo.shaft_rpm(),
-                boost_pa:         core.turbo.boost_gauge_pa(),
-                bov_envelope:     core.turbo.bov_envelope,
-                blade_count:      core.config.turbo.blade_count,
+                turbo_enabled:    core.config.turbo_enabled(),
+                turbo_shaft_rpm:  first_turbo.map(|(_, t)| t.shaft_rpm()).unwrap_or(0.0),
+                boost_pa:         first_turbo.map(|(_, t)| t.boost_gauge_pa()).unwrap_or(0.0),
+                bov_envelope:     first_turbo.map(|(_, t)| t.bov_envelope).unwrap_or(0.0),
+                blade_count:      first_turbo
+                    .and_then(|(i, _)| core.config.turbos.get(i))
+                    .map(|c| c.blade_count)
+                    .unwrap_or(11),
             });
         }
     }

@@ -8,8 +8,8 @@ use crate::engine::{
 };
 
 use super::{
-    CompressorWheel, ConRod, Crankshaft, CylinderGasViz, DamageSource, DamageVisual,
-    ManifoldKind, ManifoldViz, Piston, TurbineWheel, TurboHousing,
+    ConRod, Crankshaft, CylinderGasViz, DamageSource, DamageVisual,
+    ManifoldKind, ManifoldViz, Piston, TurbineWheel,
     Valve, ValveKind, RodAttachmentPoints,
 };
 
@@ -218,56 +218,18 @@ pub fn animate_manifolds(
 pub fn animate_turbo(
     time: Res<Time>,
     core: Res<crate::engine::EngineCore>,
-    mut q_comp: Query<&mut Transform, (With<CompressorWheel>, Without<TurbineWheel>)>,
-    mut q_turb: Query<&mut Transform, (With<TurbineWheel>, Without<CompressorWheel>)>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    q_housing: Query<&TurboHousing>,
+    mut q_turb: Query<(&mut Transform, &TurbineWheel)>,
 ) {
-    if !core.config.turbo.enabled { return; }
+    if !core.config.turbo_enabled() { return; }
     let dt = time.delta_seconds();
 
-    // Map physical shaft speed → visual angular velocity (cap so it stays readable).
-    let omega_phys = core.turbo.shaft_omega;
-    let visual_omega = (omega_phys * 0.0015).clamp(0.0, 25.0);
-    let dtheta = visual_omega * dt;
-
-    for mut t in &mut q_comp {
-        // Spin around the shaft axis (Z in the local turbo frame).
-        t.rotate_local_z(dtheta);
-    }
-    for mut t in &mut q_turb {
-        // Turbine spins the same direction (mechanically coupled).
-        t.rotate_local_z(dtheta);
-    }
-
-    // Tint housings by boost / heat so the turbo "lights up" when working.
-    let boost_norm = (core.turbo.boost_gauge_pa() / 1.5e5).clamp(0.0, 1.0);
-    let exh_t = ((core.exhaust.temperature - 600.0) / 1000.0).clamp(0.0, 1.0);
-    for h in &q_housing {
-        let Some(mat) = materials.get_mut(&h.material) else { continue };
-        // Heuristic: cold-side housings have base_color blue-ish, hot ones reddish.
-        // Bump emissive / alpha based on the relevant signal.
-        match mat.base_color {
-            Color::Srgba(c) => {
-                if c.blue > c.red {
-                    // Compressor housing (cold side): glow with boost.
-                    mat.emissive = LinearRgba::new(
-                        0.02 + 0.30 * boost_norm,
-                        0.05 + 0.50 * boost_norm,
-                        0.10 + 0.80 * boost_norm,
-                        1.0,
-                    );
-                } else {
-                    // Turbine housing (hot side): glow with exhaust heat.
-                    mat.emissive = LinearRgba::new(
-                        0.20 + 1.20 * exh_t,
-                        0.05 + 0.40 * exh_t,
-                        0.02 + 0.10 * exh_t,
-                        1.0,
-                    );
-                }
-            }
-            _ => {}
+    // Animate each turbine wheel with its corresponding turbo's speed
+    for (mut transform, wheel) in &mut q_turb {
+        if let Some(turbo_state) = core.turbos.get(wheel.turbo_idx) {
+            let omega_phys = turbo_state.shaft_omega;
+            let visual_omega = (omega_phys * 0.0015).clamp(0.0, 25.0);
+            let dtheta = visual_omega * dt;
+            transform.rotate_local_z(dtheta);
         }
     }
 }

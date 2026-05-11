@@ -54,5 +54,6 @@ pub fn preset() -> EngineConfig {
 
         cylinder_spacing: 0.10, // Doesn't matter for 1 cylinder, but kept for struct completion
         materials: MaterialsConfig::default_for_bore(0.086),
+        turbos: vec![], // Naturally aspirated
     }
 }

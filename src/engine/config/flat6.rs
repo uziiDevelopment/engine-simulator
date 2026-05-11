@@ -51,8 +51,10 @@ pub fn preset() -> EngineConfig {
 
         cylinder_spacing: 0.12,
         materials: MaterialsConfig::default_for_bore(0.102),
-        turbo: crate::engine::turbo::TurboConfig::for_displacement(
-            std::f32::consts::PI * 0.102 * 0.102 * 0.25 * 0.077 * 6.0,
-        ),
+        turbos: vec![
+            crate::engine::turbo::TurboConfig::for_displacement(
+                std::f32::consts::PI * 0.102 * 0.102 * 0.25 * 0.077 * 6.0,
+            ),
+        ],
     }
 }

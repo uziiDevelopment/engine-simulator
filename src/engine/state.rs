@@ -65,7 +65,7 @@ pub struct EngineCore {
     pub exhaust:   Manifold,
 
     // ── Forced induction ────────────────────────────────────────────────────
-    pub turbo: TurboState,
+    pub turbos: Vec<TurboState>,
 
     // ── Lubrication ─────────────────────────────────────────────────────────
     pub oil_config: OilConfig,
@@ -137,7 +137,9 @@ impl EngineCore {
         let oil_config = OilConfig::default();
         let oil = OilState::fresh(&oil_config);
 
-        let turbo = TurboState::fresh(&config.turbo);
+        let turbos: Vec<TurboState> = config.turbos.iter()
+            .map(|cfg| TurboState::fresh(cfg))
+            .collect();
 
         let coolant_config = CoolantConfig::default();
         let coolant = CoolantState::fresh(&coolant_config);
@@ -171,7 +173,7 @@ impl EngineCore {
             cylinders,
             intake,
             exhaust,
-            turbo,
+            turbos,
 
             oil_config,
             oil,
@@ -246,7 +248,9 @@ impl EngineCore {
             label: "exhaust",
         };
 
-        self.turbo = TurboState::fresh(&config.turbo);
+        self.turbos = config.turbos.iter()
+            .map(|cfg| TurboState::fresh(cfg))
+            .collect();
 
         self.config = config;
         self.config_idx = idx;

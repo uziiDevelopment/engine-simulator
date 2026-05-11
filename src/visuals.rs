@@ -82,12 +82,26 @@ pub struct EngineVisual;
 #[derive(Component)] pub struct Clutch;
 
 /// The compressor wheel of the turbocharger (cold side, intake).
-#[derive(Component)] pub struct CompressorWheel;
+#[derive(Component)]
+pub struct CompressorWheel {
+    /// Which turbo this wheel belongs to (0-3 for up to 4 turbos).
+    pub turbo_idx: usize,
+}
+
 /// The turbine wheel of the turbocharger (hot side, exhaust).
-#[derive(Component)] pub struct TurbineWheel;
+#[derive(Component)]
+pub struct TurbineWheel {
+    /// Which turbo this wheel belongs to (0-3 for up to 4 turbos).
+    pub turbo_idx: usize,
+}
+
 /// The translucent housing material — tinted by boost pressure.
 #[derive(Component)]
-pub struct TurboHousing { pub material: Handle<StandardMaterial> }
+pub struct TurboHousing {
+    pub material: Handle<StandardMaterial>,
+    /// Which turbo this housing belongs to (0-3 for up to 4 turbos).
+    pub turbo_idx: usize,
+}
 
 #[derive(Component)]
 pub struct Piston {

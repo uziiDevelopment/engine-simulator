@@ -50,5 +50,6 @@ pub fn preset_250cc_twin() -> EngineConfig {
 
         cylinder_spacing: 0.075,
         materials: MaterialsConfig::default_for_bore(0.062),
+        turbos: vec![], // Naturally aspirated
     }
 }

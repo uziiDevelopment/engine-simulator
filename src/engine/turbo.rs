@@ -84,30 +84,51 @@ impl TurboConfig {
     /// much enthalpy from multi-cylinder exhaust, overspeeds instantly, and
     /// produces runaway boost.
     pub fn for_displacement(total_displacement_m3: f32) -> Self {
+        Self::default().scaled_for_displacement(total_displacement_m3)
+    }
+
+    /// Scale this turbo configuration for a given engine displacement.
+    ///
+    /// This takes a bespoke base config (e.g., with custom target boost,
+    /// efficiency values, etc.) and scales the physical size parameters
+    /// (turbine area, wastegate area, shaft inertia, etc.) to match the
+    /// engine's total displacement.
+    ///
+    /// Use this in engine configs to create custom turbos that are properly
+    /// sized for the engine while having unique characteristics.
+    ///
+    /// # Example
+    /// ```ignore
+    /// turbo: TurboConfig {
+    ///     enabled: true,
+    ///     target_boost_pa: 1.2e5,  // 1.2 bar boost
+    ///     turbine_efficiency: 0.75,
+    ///     ..Default::default()
+    /// }.scaled_for_displacement(0.0034), // 3.4L engine
+    /// ```
+    pub fn scaled_for_displacement(mut self, total_displacement_m3: f32) -> Self {
         let base_disp = 0.0005_f32; // 500 cc reference
         let ratio = (total_displacement_m3 / base_disp).clamp(0.25, 32.0);
+        let sqrt_ratio = ratio.sqrt();
 
-        Self {
-            enabled: false,
-            target_boost_pa: 0.8e5,
-            // Bigger turbo → heavier rotor → more inertia  (I ∝ disp^1.4)
-            shaft_inertia: 5.0e-6 * ratio.powf(1.4),
-            // Bigger wheels have lower burst speed.
-            max_shaft_rad_s: 20_000.0 / ratio.powf(0.15),
-            turbine_efficiency: 0.70,
-            compressor_efficiency: 0.72,
-            // Flow areas scale linearly — N× displacement pumps N× exhaust.
-            turbine_area: 0.00060 * ratio,
-            wastegate_area: 0.00040 * ratio,
-            // Compressor wheel grows gently (≈ cube-root of volume).
-            impeller_radius: 0.030 * ratio.powf(0.20),
-            compressor_area: 0.00080 * ratio,
-            // Charge plumbing grows sub-linearly.
-            boost_plenum_volume: 0.0010 * ratio.powf(0.7),
-            intercooler_effectiveness: 0.65,
-            bov_threshold_pa: 0.30e5,
-            blade_count: 11,
-        }
+        // Turbine and wastegate both scale with √ratio to maintain proper
+        // proportionality for boost control. If wastegate scales linearly
+        // while turbine scales with √ratio, the wastegate becomes oversized
+        // on larger engines, causing poor boost regulation and overboost.
+        // Shaft inertia scales linearly to prevent overspeed.
+        self.shaft_inertia = 5.0e-6 * ratio;
+        self.turbine_area = 0.00060 * sqrt_ratio;
+        self.wastegate_area = 0.00040 * sqrt_ratio; // Fixed: was linear, now √ratio
+        self.compressor_area = 0.00080 * sqrt_ratio; // Also √ratio for consistency
+        self.boost_plenum_volume = 0.0010 * ratio.powf(0.7);
+
+        self
+    }
+
+    /// Enable this turbo configuration.
+    pub fn enabled(mut self) -> Self {
+        self.enabled = true;
+        self
     }
 }
 
@@ -119,6 +140,7 @@ pub struct TurboState {
     pub wastegate_integral: f32,    // PI controller integral term
     pub bov_envelope: f32,          // 0..1, decays after a BOV pop
     pub last_throttle: f32,         // for BOV detection (throttle drop)
+    pub last_boost: f32,            // previous boost for derivative calculation
     pub compressor_power_w: f32,    // instantaneous, for telemetry
     pub turbine_power_w: f32,       // instantaneous, for telemetry
     pub compressor_outlet_temp: f32,
@@ -140,6 +162,7 @@ impl TurboState {
             wastegate_integral: 0.0,
             bov_envelope: 0.0,
             last_throttle: 0.0,
+            last_boost: 0.0,
             compressor_power_w: 0.0,
             turbine_power_w: 0.0,
             compressor_outlet_temp: T_ATM,
@@ -169,15 +192,34 @@ pub fn step_turbo(
 ) {
     if !cfg.enabled { return; }
 
-    // ── Wastegate PI controller ───────────────────────────────────────────
+    // ── Wastegate PID controller with feedforward ───────────────────────
     let boost_actual = state.boost_gauge_pa();
     let err = boost_actual - cfg.target_boost_pa;
+
+    // Derivative term: respond to rising boost quickly (prevents overshoot)
+    let boost_rate = (boost_actual - state.last_boost) / dt.max(1e-6);
+    state.last_boost = boost_actual;
+
     // Anti-windup: clamp integral.
     state.wastegate_integral += err * dt;
-    state.wastegate_integral = state.wastegate_integral.clamp(-2e5, 2e5);
-    let kp = 4.0e-6;
-    let ki = 2.0e-6;
-    let raw = kp * err + ki * state.wastegate_integral;
+    state.wastegate_integral = state.wastegate_integral.clamp(-0.5e5, 0.5e5);
+
+    // Aggressive PID gains for tight boost control
+    let kp = 15.0e-6;  // Proportional: respond to current error
+    let ki = 8.0e-6;   // Integral: eliminate steady-state error
+    let kd = 2.0e-6;   // Derivative: respond to rate of change (reduces overshoot)
+
+    // Feedforward: start opening wastegate at high throttle before boost hits target
+    // This prevents the "spike" at full throttle when turbo is at max flow
+    let throttle_ff = if throttle > 0.85 {
+        // At full throttle, preemptively open wastegate based on proximity to target
+        let proximity = (boost_actual / cfg.target_boost_pa).clamp(0.0, 1.5);
+        0.15 * proximity  // Start opening early at ~60% of target
+    } else {
+        0.0
+    };
+
+    let raw = kp * err + ki * state.wastegate_integral - kd * boost_rate + throttle_ff;
     state.wastegate_open_frac = raw.clamp(0.0, 1.0);
 
     // ── Turbine + wastegate flow (exhaust → atmosphere) ───────────────────
