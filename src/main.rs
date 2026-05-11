@@ -10,6 +10,7 @@
 
 mod camera;
 mod engine;
+mod interaction;
 mod ui;
 mod visuals;
 mod audio;
@@ -33,6 +34,7 @@ fn main() {
         .add_plugins(engine::EnginePlugin)
         .add_plugins(visuals::VisualsPlugin)
         .add_plugins(camera::CameraPlugin)
+        .add_plugins(interaction::InteractionPlugin)
         .add_plugins(ui::UiPlugin)
         .add_plugins(audio::EngineAudioPlugin)
         .run();

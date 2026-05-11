@@ -9,7 +9,8 @@
       "Read(//d/Development/**)",
       "Bash(cargo build *)",
       "Bash(Select-Object FullName)",
-      "Bash(Sort-Object FullName)"
+      "Bash(Sort-Object FullName)",
+      "Bash(ls \"C:/Users/jq/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/\" | grep \"bevy_mod_pick\\\\|bevy_picking\" 2>&1)"
     ]
   }
 }

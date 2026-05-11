@@ -107,6 +107,7 @@ pub struct EngineCore {
     pub friction_heat_smoothed:    f32,
     /// Smoothed coolant temperature (K) — for the gauge.
     pub coolant_temp_smoothed:     f32,
+    pub throttle_smoothed:         f32,
 }
 
 impl EngineCore {
@@ -197,6 +198,7 @@ impl EngineCore {
             last_frame_work_j: 0.0,
             friction_heat_smoothed: 0.0,
             coolant_temp_smoothed: T_ATM,
+            throttle_smoothed: 0.0,
         }
     }
 
@@ -287,5 +289,6 @@ impl EngineCore {
         self.last_frame_work_j = 0.0;
         self.friction_heat_smoothed = 0.0;
         self.coolant_temp_smoothed = T_ATM;
+        self.throttle_smoothed = 0.0;
     }
 }

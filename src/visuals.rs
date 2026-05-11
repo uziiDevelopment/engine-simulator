@@ -37,6 +37,7 @@ impl Plugin for VisualsPlugin {
                     animate::apply_clutch_material,
                     sync_damage_visual_materials,
                     discover_rod_attachments,
+                    animate::discover_turbo_wheels,
                 )
                     .chain()
                     .after(crate::engine::engine_step),
@@ -95,6 +96,17 @@ pub struct TurbineWheel {
     pub turbo_idx: usize,
 }
 
+/// Root entity for a GLB-based turbocharger. Used to discover spin node children.
+#[derive(Component)]
+pub struct TurboGlbRoot {
+    pub turbo_idx: usize,
+}
+
+/// Sentinel inserted on the root once `discover_turbo_wheels` has finished tagging
+/// the spin nodes. Prevents re-scanning every frame.
+#[derive(Component)]
+pub struct TurboWheelsDiscovered;
+
 /// The translucent housing material — tinted by boost pressure.
 #[derive(Component)]
 pub struct TurboHousing {
@@ -102,6 +114,11 @@ pub struct TurboHousing {
     /// Which turbo this housing belongs to (0-3 for up to 4 turbos).
     pub turbo_idx: usize,
 }
+
+/// Throttle body flap that rotates to show throttle openness.
+/// 0.0 = closed (vertical), 1.0 = fully open (horizontal).
+#[derive(Component)]
+pub struct ThrottleFlap;
 
 #[derive(Component)]
 pub struct Piston {

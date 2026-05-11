@@ -9,6 +9,7 @@ bevy_egui = "0.30"
 ringbuf = "0.3"
 rodio = "0.18.1"
 hound = "3.5"
+bevy_mod_picking = "0.20"
 
 [profile.dev]
 opt-level = 1

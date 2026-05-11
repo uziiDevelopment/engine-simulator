@@ -7,9 +7,9 @@ use std::f32::consts::PI;
 use crate::engine::{EngineCore, VIS_SCALE};
 
 use super::{
-    Clutch, CompressorWheel, ConRod, Crankshaft, CylinderGasViz, DamageSource, DamageVisual,
-    EngineVisual, Flywheel, ManifoldKind, ManifoldViz, Piston, TurbineWheel, TurboHousing,
-    Valve, ValveKind,
+    Clutch, ConRod, Crankshaft, CylinderGasViz, DamageSource, DamageVisual,
+    EngineVisual, Flywheel, ManifoldKind, ManifoldViz, Piston, ThrottleFlap,
+    TurboGlbRoot, Valve, ValveKind,
 };
 
 /// Spawns static scene elements (floor, lights) that don't depend on engine config.
@@ -494,17 +494,23 @@ commands.spawn((
     match cfg.layout {
         crate::engine::EngineLayout::Inline => {
             // Intake on −Z, exhaust on +Z
+            let intake_pos = Vec3::new(0.0, head_y + 0.08 * s, -0.10 * s);
             commands.spawn((
                 EngineVisual,
                 Name::new("Intake Runner"),
                 ManifoldViz { kind: ManifoldKind::Intake, material: intake_mat.clone() },
                 PbrBundle {
-                    mesh: runner_mesh.clone(), material: intake_mat,
-                    transform: Transform::from_xyz(0.0, head_y + 0.08 * s, -0.10 * s)
+                    mesh: runner_mesh.clone(), material: intake_mat.clone(),
+                    transform: Transform::from_translation(intake_pos)
                         .with_rotation(Quat::from_rotation_z(PI / 2.0)),
                     ..default()
                 },
             )).set_parent(grp_manifolds);
+
+            // Throttle body at end of intake runner
+            let throttle_body_pos = intake_pos + Vec3::new(-0.12 * s, 0.0, 0.0);
+            spawn_throttle_body(commands, meshes, materials, throttle_body_pos, s);
+
             commands.spawn((
                 EngineVisual,
                 Name::new("Exhaust Runner"),
@@ -525,12 +531,17 @@ commands.spawn((
                 Name::new("Intake Runner"),
                 ManifoldViz { kind: ManifoldKind::Intake, material: intake_mat.clone() },
                 PbrBundle {
-                    mesh: runner_mesh.clone(), material: intake_mat,
+                    mesh: runner_mesh.clone(), material: intake_mat.clone(),
                     transform: Transform::from_translation(intake_pos)
                         .with_rotation(Quat::from_rotation_z(PI / 2.0)),
                     ..default()
                 },
             )).set_parent(grp_manifolds);
+
+            // Throttle body at end of intake runner (offset in -X direction)
+            let throttle_body_pos = intake_pos + Vec3::new(-0.12 * s, 0.0, 0.0);
+            spawn_throttle_body(commands, meshes, materials, throttle_body_pos, s);
+
             // Exhaust runners on outer side of each bank
             let exh_offset = 0.14 * s;
             let tilt_a = cfg.bank_angle * 0.5;
@@ -577,8 +588,8 @@ commands.spawn((
         .collect();
 
     let total_enabled = enabled_turbos.len();
-    for (idx, turbo_cfg) in enabled_turbos {
-        spawn_turbo(commands, meshes, materials, head_y, head_width, idx, total_enabled, turbo_cfg.blade_count);
+    for (idx, _turbo_cfg) in enabled_turbos {
+        spawn_turbo(commands, asset_server, head_y, head_width, idx, total_enabled);
     }
 
     // ── Port tubes from head to runners ────────────────────────────────────
@@ -601,26 +612,21 @@ commands.spawn((
 }
 
 // ── Turbocharger spawn helper ──────────────────────────────────────────────
-/// Spawn a single turbo with improved model. Supports up to 4 turbos positioned
-/// intelligently around the engine.
+/// Spawns a single turbo using the shared turbo.glb asset.
+/// `discover_turbo_wheels` (animate.rs) later tags the spin nodes so they
+/// can be driven by `animate_turbo`.
 fn spawn_turbo(
     commands: &mut Commands,
-    meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<StandardMaterial>>,
+    asset_server: &AssetServer,
     head_y: f32,
     head_width: f32,
     turbo_idx: usize,
     total_turbos: usize,
-    blade_count: u32,
 ) {
     let s = VIS_SCALE;
 
-    // Calculate position based on turbo index and total count
-    // 1 turbo: right side
-    // 2 turbos: both sides (left/right)
-    // 3-4 turbos: distributed around
     let (group_x, group_z, rotation_y) = match (total_turbos, turbo_idx) {
-        (1, 0) => ((head_width * 0.5) + 0.45 * s, 0.0, 0.0),
+        (1, 0) => ((head_width * 0.5) + 0.45 * s, 0.0, 0.0_f32),
         (2, 0) => ((head_width * 0.5) + 0.40 * s, 0.25 * s, 0.0),
         (2, 1) => (-(head_width * 0.5) - 0.40 * s, 0.25 * s, PI),
         (3, 0) => ((head_width * 0.5) + 0.40 * s, 0.0, 0.0),
@@ -630,246 +636,123 @@ fn spawn_turbo(
         (4, 1) => (-(head_width * 0.5) - 0.35 * s, 0.25 * s, PI),
         (4, 2) => ((head_width * 0.5) + 0.35 * s, -0.25 * s, 0.0),
         (4, 3) => (-(head_width * 0.5) - 0.35 * s, -0.25 * s, PI),
-        _ => ((head_width * 0.5) + 0.45 * s + (turbo_idx as f32 * 0.15 * s), 0.0, 0.0),
+        _ => ((head_width * 0.5) + 0.45 * s + turbo_idx as f32 * 0.15 * s, 0.0, 0.0),
     };
 
     let group_y = head_y * 0.45;
+    let turbo_scene: Handle<Scene> = asset_server.load("engine/turbo/turbo.glb#Scene0");
 
-    let turbo_name = format!("Turbocharger {}", turbo_idx + 1);
-    let group = commands.spawn((
-        EngineVisual,
-        Name::new(turbo_name),
-        SpatialBundle::from_transform(
-            Transform::from_xyz(group_x, group_y, group_z)
-                .with_rotation(Quat::from_rotation_y(rotation_y)),
-        ),
-    )).id();
+    // Scale: the GLB is authored in Blender units (cm → m export = 0.01).
+    // We then apply VIS_SCALE (8.0) so the turbo sits proportionally alongside
+    // the engine. Tweak this constant if the model's native size differs.
+    const GLB_TO_SIM: f32 = 0.55; // metres-per-Blender-unit * VIS_SCALE fudge
 
-    // ── Improved mesh definitions ───────────────────────────────────────────
-    // Main housing: scaled sphere for snail-shell shape
-    let housing_mesh = meshes.add(Sphere::new(0.18 * s).mesh().ico(16).unwrap());
-    // Wheel hub: slightly larger and more detailed
-    let wheel_hub_mesh = meshes.add(Cylinder::new(0.045 * s, 0.08 * s));
-    // Curved blade using thin box with twist
-    let blade_mesh = meshes.add(Cuboid::new(0.12 * s, 0.015 * s, 0.025 * s));
-    // Inlet/outlet pipes
-    let pipe_mesh = meshes.add(Cylinder::new(0.06 * s, 0.25 * s));
-    let small_pipe_mesh = meshes.add(Cylinder::new(0.04 * s, 0.15 * s));
-    // Center shaft
-    let shaft_mesh = meshes.add(Cylinder::new(0.015 * s, 0.35 * s));
-
-    // ── Materials ───────────────────────────────────────────────────────────
-    let shaft_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.60, 0.60, 0.65),
-        metallic: 0.95, perceptual_roughness: 0.15,
-        ..default()
-    });
-
-    let comp_housing_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.70, 0.80, 0.95, 0.40),
-        emissive: LinearRgba::new(0.03, 0.05, 0.10, 1.0),
-        metallic: 0.5, perceptual_roughness: 0.30,
-        alpha_mode: AlphaMode::Blend,
-        double_sided: true, cull_mode: None,
-        ..default()
-    });
-
-    let turb_housing_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.80, 0.35, 0.20, 0.50),
-        emissive: LinearRgba::new(0.25, 0.06, 0.02, 1.0),
-        metallic: 0.6, perceptual_roughness: 0.50,
-        alpha_mode: AlphaMode::Blend,
-        double_sided: true, cull_mode: None,
-        ..default()
-    });
-
-    // ── Center shaft ────────────────────────────────────────────────────────
     commands.spawn((
         EngineVisual,
-        Name::new(format!("Turbo {} Shaft", turbo_idx + 1)),
+        TurboGlbRoot { turbo_idx },
+        Name::new(format!("Turbocharger {}", turbo_idx + 1)),
+        SceneBundle {
+            scene: turbo_scene,
+            transform: Transform::from_xyz(group_x, group_y, group_z)
+                .with_rotation(Quat::from_rotation_y(rotation_y))
+                .with_scale(Vec3::splat(GLB_TO_SIM)),
+            ..default()
+        },
+    ));
+}
+
+// ── Throttle body with rotating flap ──────────────────────────────────────
+fn spawn_throttle_body(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    pos: Vec3,
+    s: f32,
+) {
+    let throttle_group = commands.spawn((
+        EngineVisual,
+        Name::new("Throttle Body"),
+        SpatialBundle::from_transform(Transform::from_translation(pos)),
+    )).id();
+
+    // 1. Boxy Main Housing block
+    let housing_mesh = meshes.add(Cuboid::new(0.04 * s, 0.08 * s, 0.08 * s));
+    let housing_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.20, 0.20, 0.22),
+        metallic: 0.6, perceptual_roughness: 0.5,
+        ..default()
+    });
+
+    commands.spawn((
+        EngineVisual,
+        Name::new("Throttle Housing"),
+        PbrBundle {
+            mesh: housing_mesh,
+            material: housing_mat,
+            ..default()
+        },
+    )).set_parent(throttle_group);
+
+    // 2. Tubular flange attaching to runner bore (Runner is along X axis)
+    let flange_mesh = meshes.add(Cylinder::new(0.035 * s, 0.06 * s));
+    let flange_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.30, 0.30, 0.32),
+        metallic: 0.7, perceptual_roughness: 0.4,
+        ..default()
+    });
+
+    commands.spawn((
+        EngineVisual,
+        Name::new("Throttle Flange"),
+        PbrBundle {
+            mesh: flange_mesh,
+            material: flange_mat,
+            transform: Transform::from_rotation(Quat::from_rotation_z(PI / 2.0)),
+            ..default()
+        },
+    )).set_parent(throttle_group);
+
+    // 3. The Butterfly Valve Flap
+    // Using a thin cuboid means it naturally blocks the X-axis (Y & Z are the wide sides).
+    // This makes it extremely robust to however your animation system overrides rotation!
+    let flap_mesh = meshes.add(Cuboid::new(0.002 * s, 0.056 * s, 0.056 * s));
+    let flap_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.80, 0.65, 0.25), // Distinctive brass/gold butterfly valve
+        metallic: 0.9, perceptual_roughness: 0.3,
+        ..default()
+    });
+
+    commands.spawn((
+        EngineVisual,
+        Name::new("Throttle Flap"),
+        ThrottleFlap, // Animated by your external system
+        PbrBundle {
+            mesh: flap_mesh,
+            material: flap_mat,
+            // 30 degree tilt default (partially open). 
+            transform: Transform::from_rotation(Quat::from_rotation_z(PI / 6.0)),
+            ..default()
+        },
+    )).set_parent(throttle_group);
+
+    // 4. Actuator Shaft (Pin through the flap)
+    let shaft_mesh = meshes.add(Cylinder::new(0.004 * s, 0.10 * s));
+    let shaft_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.40, 0.40, 0.42),
+        metallic: 0.9, perceptual_roughness: 0.2,
+        ..default()
+    });
+
+    commands.spawn((
+        EngineVisual,
+        Name::new("Throttle Shaft"),
         PbrBundle {
             mesh: shaft_mesh,
             material: shaft_mat,
             transform: Transform::from_rotation(Quat::from_rotation_x(PI / 2.0)),
             ..default()
         },
-    )).set_parent(group);
-
-    // ── Compressor side (cold side, +Z) ───────────────────────────────────
-    commands.spawn((
-        EngineVisual,
-        Name::new(format!("Compressor {} Housing", turbo_idx + 1)),
-        TurboHousing { material: comp_housing_mat.clone(), turbo_idx },
-        PbrBundle {
-            mesh: housing_mesh.clone(),
-            material: comp_housing_mat.clone(),
-            transform: Transform::from_xyz(0.0, 0.0, 0.16 * s)
-                .with_scale(Vec3::new(1.0, 1.1, 0.8))
-                .with_rotation(Quat::from_rotation_x(PI / 2.0)),
-            ..default()
-        },
-    )).set_parent(group);
-
-    // Compressor wheel with unique index for animation
-    let comp_pivot = commands.spawn((
-        EngineVisual,
-        CompressorWheel { turbo_idx },
-        Name::new(format!("Compressor {} Wheel", turbo_idx + 1)),
-        SpatialBundle::from_transform(Transform::from_xyz(0.0, 0.0, 0.16 * s)),
-    )).id();
-
-    let comp_hub_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.90, 0.92, 0.95),
-        metallic: 0.95, perceptual_roughness: 0.12,
-        ..default()
-    });
-
-    commands.spawn((
-        EngineVisual,
-        Name::new(format!("Compressor {} Hub", turbo_idx + 1)),
-        PbrBundle {
-            mesh: wheel_hub_mesh.clone(),
-            material: comp_hub_mat.clone(),
-            transform: Transform::from_rotation(Quat::from_rotation_x(PI / 2.0)),
-            ..default()
-        },
-    )).set_parent(comp_pivot);
-
-    // Compressor blades - curved
-    let n_blades = blade_count.max(6).min(16) as usize;
-    for i in 0..n_blades {
-        let ang = i as f32 * 2.0 * PI / n_blades as f32;
-        let twist = 0.35_f32; // Blade twist angle
-        let xform = Transform::from_rotation(Quat::from_rotation_z(ang))
-            * Transform::from_xyz(0.07 * s, 0.0, 0.0)
-            * Transform::from_rotation(Quat::from_rotation_y(twist));
-        commands.spawn((
-            EngineVisual,
-            Name::new(format!("Compressor {} Blade {}", turbo_idx + 1, i + 1)),
-            PbrBundle {
-                mesh: blade_mesh.clone(),
-                material: comp_hub_mat.clone(),
-                transform: xform,
-                ..default()
-            },
-        )).set_parent(comp_pivot);
-    }
-
-    // ── Turbine side (hot side, -Z) ───────────────────────────────────────
-    commands.spawn((
-        EngineVisual,
-        Name::new(format!("Turbine {} Housing", turbo_idx + 1)),
-        TurboHousing { material: turb_housing_mat.clone(), turbo_idx },
-        PbrBundle {
-            mesh: housing_mesh,
-            material: turb_housing_mat.clone(),
-            transform: Transform::from_xyz(0.0, 0.0, -0.16 * s)
-                .with_scale(Vec3::new(1.0, 1.1, 0.8))
-                .with_rotation(Quat::from_rotation_x(PI / 2.0)),
-            ..default()
-        },
-    )).set_parent(group);
-
-    let turb_pivot = commands.spawn((
-        EngineVisual,
-        TurbineWheel { turbo_idx },
-        Name::new(format!("Turbine {} Wheel", turbo_idx + 1)),
-        SpatialBundle::from_transform(Transform::from_xyz(0.0, 0.0, -0.16 * s)),
-    )).id();
-
-    let turb_hub_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.65, 0.32, 0.18),
-        emissive: LinearRgba::new(0.15, 0.04, 0.02, 1.0),
-        metallic: 0.85, perceptual_roughness: 0.40,
-        ..default()
-    });
-
-    commands.spawn((
-        EngineVisual,
-        Name::new(format!("Turbine {} Hub", turbo_idx + 1)),
-        PbrBundle {
-            mesh: wheel_hub_mesh,
-            material: turb_hub_mat.clone(),
-            transform: Transform::from_rotation(Quat::from_rotation_x(PI / 2.0)),
-            ..default()
-        },
-    )).set_parent(turb_pivot);
-
-    // Turbine blades - curved opposite direction
-    for i in 0..n_blades {
-        let ang = i as f32 * 2.0 * PI / n_blades as f32;
-        let twist = -0.35_f32; // Opposite twist for turbine
-        let xform = Transform::from_rotation(Quat::from_rotation_z(ang))
-            * Transform::from_xyz(0.07 * s, 0.0, 0.0)
-            * Transform::from_rotation(Quat::from_rotation_y(twist));
-        commands.spawn((
-            EngineVisual,
-            Name::new(format!("Turbine {} Blade {}", turbo_idx + 1, i + 1)),
-            PbrBundle {
-                mesh: blade_mesh.clone(),
-                material: turb_hub_mat.clone(),
-                transform: xform,
-                ..default()
-            },
-        )).set_parent(turb_pivot);
-    }
-
-    // ── Piping ─────────────────────────────────────────────────────────────
-    // Intake pipe (cold inlet)
-    let intake_pipe_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.25, 0.28, 0.35),
-        metallic: 0.5, perceptual_roughness: 0.45,
-        ..default()
-    });
-    commands.spawn((
-        EngineVisual,
-        Name::new(format!("Turbo {} Intake Pipe", turbo_idx + 1)),
-        PbrBundle {
-            mesh: pipe_mesh.clone(),
-            material: intake_pipe_mat,
-            transform: Transform::from_xyz(0.0, 0.12 * s, 0.35 * s)
-                .with_rotation(Quat::from_rotation_x(PI / 2.0)),
-            ..default()
-        },
-    )).set_parent(group);
-
-    // Exhaust pipe (hot outlet)
-    let exhaust_pipe_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.35, 0.20, 0.15),
-        emissive: LinearRgba::new(0.08, 0.02, 0.01, 1.0),
-        metallic: 0.4, perceptual_roughness: 0.55,
-        ..default()
-    });
-    commands.spawn((
-        EngineVisual,
-        Name::new(format!("Turbo {} Exhaust Pipe", turbo_idx + 1)),
-        PbrBundle {
-            mesh: pipe_mesh,
-            material: exhaust_pipe_mat,
-            transform: Transform::from_xyz(0.0, -0.08 * s, -0.35 * s)
-                .with_rotation(Quat::from_rotation_x(PI / 2.0)),
-            ..default()
-        },
-    )).set_parent(group);
-
-    // Wastegate actuator (small detail)
-    let wg_mesh = meshes.add(Cylinder::new(0.025 * s, 0.08 * s));
-    let wg_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.4, 0.4, 0.42),
-        metallic: 0.7, perceptual_roughness: 0.35,
-        ..default()
-    });
-    commands.spawn((
-        EngineVisual,
-        Name::new(format!("Turbo {} Wastegate", turbo_idx + 1)),
-        PbrBundle {
-            mesh: wg_mesh,
-            material: wg_mat,
-            transform: Transform::from_xyz(0.0, 0.15 * s, -0.12 * s)
-                .with_rotation(Quat::from_rotation_x(PI / 4.0)),
-            ..default()
-        },
-    )).set_parent(group);
+    )).set_parent(throttle_group);
 }
 
 // ── Helper: compute world position given local (x, y_along_axis, z_local) and bank tilt ─

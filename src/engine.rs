@@ -585,4 +585,5 @@ pub fn engine_step(
     core.friction_heat_smoothed += (last_friction_heat_w - core.friction_heat_smoothed) * 0.06;
     core.coolant_temp_smoothed +=
         (core.coolant.temperature - core.coolant_temp_smoothed) * alpha;
+    core.throttle_smoothed += (core.throttle - core.throttle_smoothed) * alpha;
 }

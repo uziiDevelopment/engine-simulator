@@ -10,7 +10,8 @@ use crate::engine::{
 use super::{
     ConRod, Crankshaft, CylinderGasViz, DamageSource, DamageVisual,
     ManifoldKind, ManifoldViz, Piston, TurbineWheel,
-    Valve, ValveKind, RodAttachmentPoints,
+    TurboGlbRoot, TurboWheelsDiscovered,
+    Valve, ValveKind, RodAttachmentPoints, ThrottleFlap,
 };
 
 // ─────────────────────────────────── Crank ──────────────────────────────────
@@ -215,6 +216,9 @@ pub fn animate_manifolds(
 // Real turbo shafts hit ~190k RPM (≈20 000 rad/s) — visualising that literally
 // just blurs.  We map shaft speed onto a visible rotation rate that saturates
 // at ~25 rad/s so the wheel reads as "spinning fast" without strobing.
+//
+// Both `Intake_Compressor_Turbine` and `Exhaust_Turbine` nodes in the GLB are
+// tagged with `TurbineWheel` by `discover_turbo_wheels` and spun here.
 pub fn animate_turbo(
     time: Res<Time>,
     core: Res<crate::engine::EngineCore>,
@@ -223,14 +227,68 @@ pub fn animate_turbo(
     if !core.config.turbo_enabled() { return; }
     let dt = time.delta_seconds();
 
-    // Animate each turbine wheel with its corresponding turbo's speed
     for (mut transform, wheel) in &mut q_turb {
         if let Some(turbo_state) = core.turbos.get(wheel.turbo_idx) {
             let omega_phys = turbo_state.shaft_omega;
             let visual_omega = (omega_phys * 0.0015).clamp(0.0, 25.0);
-            let dtheta = visual_omega * dt;
-            transform.rotate_local_z(dtheta);
+            transform.rotate_local_y(visual_omega * dt);
         }
+    }
+}
+
+/// Scans children of each [`TurboGlbRoot`] for the two GLB spin nodes
+/// (`Intake_Compressor_Turbine` and `Exhaust_Turbine`) and inserts
+/// [`TurbineWheel`] on them so `animate_turbo` can drive them.
+/// Uses [`TurboWheelsDiscovered`] as a sentinel on the root so we only
+/// scan once (GLB loads async, so we retry until both nodes appear).
+pub fn discover_turbo_wheels(
+    mut commands: Commands,
+    q_roots: Query<(Entity, &TurboGlbRoot), Without<TurboWheelsDiscovered>>,
+    q_children: Query<&Children>,
+    q_named: Query<&Name>,
+) {
+    for (root_entity, glb_root) in &q_roots {
+        let mut found_count = 0u32;
+        let mut stack: Vec<Entity> = q_children
+            .get(root_entity)
+            .map(|c| c.iter().copied().collect())
+            .unwrap_or_default();
+
+        while let Some(child) = stack.pop() {
+            if let Ok(name) = q_named.get(child) {
+                let n = name.as_str();
+                if n.contains("Intake_Compressor_Turbine") || n.contains("Exhaust_Turbine") {
+                    commands.entity(child).insert(TurbineWheel { turbo_idx: glb_root.turbo_idx });
+                    found_count += 1;
+                }
+            }
+            if let Ok(children) = q_children.get(child) {
+                stack.extend(children.iter().copied());
+            }
+        }
+
+        // We expect exactly 2 spin nodes. Only mark done once we've found both
+        // (GLB hierarchy may not be fully spawned on the first frame).
+        if found_count >= 2 {
+            commands.entity(root_entity).insert(TurboWheelsDiscovered);
+        }
+    }
+}
+
+// ──────────────── Throttle body animation ─────────────────────────────────
+//
+// Rotates the throttle flap to show throttle openness.
+// 0% throttle = vertical (closed, 0°), 100% = horizontal (open, 90°).
+pub fn animate_throttle(
+    core: Res<EngineCore>,
+    mut q_flap: Query<&mut Transform, With<ThrottleFlap>>,
+) {
+    let throttle = core.throttle_smoothed; // 0.0 .. 1.0
+    // Map 0..1 to 0..90 degrees (0 to π/2 radians)
+    let angle = throttle * std::f32::consts::FRAC_PI_2;
+
+    for mut transform in &mut q_flap {
+        transform.rotation = Quat::from_rotation_y(angle);
     }
 }
 
