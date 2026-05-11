@@ -54,6 +54,8 @@ pub fn preset_250cc_twin() -> EngineConfig {
 
         cylinder_spacing: 0.075,
         materials: MaterialsConfig::default_for_bore(0.062),
-        turbo: crate::engine::turbo::TurboConfig::default(),
+        turbo: crate::engine::turbo::TurboConfig::for_displacement(
+            std::f32::consts::PI * 0.062 * 0.062 * 0.25 * 0.0412 * 2.0,
+        ),
     }
 }

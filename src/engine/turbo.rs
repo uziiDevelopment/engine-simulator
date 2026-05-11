@@ -74,6 +74,43 @@ impl Default for TurboConfig {
     }
 }
 
+impl TurboConfig {
+    /// Build a turbo config scaled to the engine's total displacement.
+    ///
+    /// The default values are tuned for a ~500 cc single cylinder (0.0005 m³).
+    /// Larger engines need proportionally bigger turbos: more turbine/wastegate
+    /// flow area to handle N× the exhaust, heavier rotors (more inertia), and
+    /// larger charge plumbing.  Without this scaling the turbine sees far too
+    /// much enthalpy from multi-cylinder exhaust, overspeeds instantly, and
+    /// produces runaway boost.
+    pub fn for_displacement(total_displacement_m3: f32) -> Self {
+        let base_disp = 0.0005_f32; // 500 cc reference
+        let ratio = (total_displacement_m3 / base_disp).clamp(0.25, 32.0);
+
+        Self {
+            enabled: false,
+            target_boost_pa: 0.8e5,
+            // Bigger turbo → heavier rotor → more inertia  (I ∝ disp^1.4)
+            shaft_inertia: 5.0e-6 * ratio.powf(1.4),
+            // Bigger wheels have lower burst speed.
+            max_shaft_rad_s: 20_000.0 / ratio.powf(0.15),
+            turbine_efficiency: 0.70,
+            compressor_efficiency: 0.72,
+            // Flow areas scale linearly — N× displacement pumps N× exhaust.
+            turbine_area: 0.00060 * ratio,
+            wastegate_area: 0.00040 * ratio,
+            // Compressor wheel grows gently (≈ cube-root of volume).
+            impeller_radius: 0.030 * ratio.powf(0.20),
+            compressor_area: 0.00080 * ratio,
+            // Charge plumbing grows sub-linearly.
+            boost_plenum_volume: 0.0010 * ratio.powf(0.7),
+            intercooler_effectiveness: 0.65,
+            bov_threshold_pa: 0.30e5,
+            blade_count: 11,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TurboState {
     pub shaft_omega: f32,           // rad/s

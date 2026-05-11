@@ -68,15 +68,17 @@ pub fn preset_f1_v6() -> EngineConfig {
         turbo: crate::engine::turbo::TurboConfig {
             enabled: true,
             target_boost_pa: 1.5e5,    // 1.5 bar — modern F1 turbo era
-            shaft_inertia: 3.0e-6,     // light wheel — fast spool
+            shaft_inertia: 1.2e-5,     // lightweight ceramic wheel, but properly
+                                       // scaled for 6-cyl exhaust energy
             max_shaft_rad_s: 13_000.0, // ~125k RPM
             turbine_efficiency: 0.78,
             compressor_efficiency: 0.78,
-            turbine_area: 0.00080,
-            wastegate_area: 0.00050,
-            impeller_radius: 0.034,
-            compressor_area: 0.00100,
-            boost_plenum_volume: 0.0015,
+            // Areas scaled for 1.6L (ratio ≈ 3.2× from 500cc base):
+            turbine_area: 0.00190,     // 0.0006 × 3.2 — handles 6-cyl exhaust flow
+            wastegate_area: 0.00128,   // 0.0004 × 3.2
+            impeller_radius: 0.037,    // 0.030 × 3.2^0.2
+            compressor_area: 0.00256,  // 0.0008 × 3.2
+            boost_plenum_volume: 0.0024,
             intercooler_effectiveness: 0.75,
             bov_threshold_pa: 0.40e5,
             blade_count: 12,

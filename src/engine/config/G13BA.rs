@@ -56,6 +56,8 @@ pub fn preset_suzuki_swift_1_3() -> EngineConfig {
 
         cylinder_spacing: 0.084,
         materials: MaterialsConfig::default_for_bore(0.074),
-        turbo: crate::engine::turbo::TurboConfig::default(),
+        turbo: crate::engine::turbo::TurboConfig::for_displacement(
+            std::f32::consts::PI * 0.074 * 0.074 * 0.25 * 0.0755 * 4.0,
+        ),
     }
 }

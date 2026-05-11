@@ -132,6 +132,12 @@ fn ui_panel(
                         .show_value(true)
                         .custom_formatter(|v, _| format!("{:>3.0}%", v * 100.0)),
                 );
+                ui.add(
+                    egui::Slider::new(&mut core.config.clutch_max_torque, 50.0..=3000.0)
+                        .text("Max Torque")
+                        .custom_formatter(|v, _| format!("{:.0} Nm", v))
+                        .logarithmic(true),
+                );
 
                 // ── Time scale ───────────────────────────────────────────────
                 ui.add_space(6.0);
@@ -216,13 +222,13 @@ fn ui_panel(
                     }
                     if core.config.turbo.enabled {
                         ui.add_space(4.0);
-                        let mut target_bar = core.config.turbo.target_boost_pa / 1.0e5;
+                        let mut target_psi = core.config.turbo.target_boost_pa / 6894.76;
                         if ui.add(
-                            egui::Slider::new(&mut target_bar, 0.0..=2.5)
+                            egui::Slider::new(&mut target_psi, 0.0..=36.0)
                                 .text("Target Boost")
-                                .custom_formatter(|v, _| format!("{:.2} bar", v))
+                                .custom_formatter(|v, _| format!("{:.1} psi", v))
                         ).changed() {
-                            core.config.turbo.target_boost_pa = target_bar * 1.0e5;
+                            core.config.turbo.target_boost_pa = target_psi * 6894.76;
                         }
                         ui.add(
                             egui::Slider::new(
@@ -238,8 +244,8 @@ fn ui_panel(
                             core.turbo.shaft_rpm()
                         )).monospace().small());
                         ui.label(egui::RichText::new(format!(
-                            "Boost: {:>+5.2} bar",
-                            core.turbo.boost_gauge_pa() / 1.0e5
+                            "Boost: {:>+5.1} psi",
+                            core.turbo.boost_gauge_pa() / 6894.76
                         )).monospace().small());
                         ui.label(egui::RichText::new(format!(
                             "Wastegate: {:>3.0}%",
@@ -964,7 +970,7 @@ fn pressure_minibar(ui: &mut egui::Ui, pressure_ratio: f32, temp_k: f32, flash: 
             (flame[0] * 255.0) as u8, (flame[1] * 255.0) as u8, (flame[2] * 255.0) as u8, a,
         ));
     }
-    ui.label(egui::RichText::new(format!("{:>5.1} bar  {:>4.0} K", pressure_ratio, temp_k)).monospace().small());
+    ui.label(egui::RichText::new(format!("{:>5.1} psi  {:>4.0} K", pressure_ratio * 14.696, temp_k)).monospace().small());
 }
 
 fn draw_render_tree(

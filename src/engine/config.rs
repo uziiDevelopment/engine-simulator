@@ -469,6 +469,8 @@ pub fn build_engine(
 
         cylinder_spacing: 0.10,
         materials: MaterialsConfig::default_for_bore(bore),
-        turbo: TurboConfig::default(),
+        turbo: TurboConfig::for_displacement(
+            PI * bore * bore * 0.25 * stroke * num_cylinders as f32,
+        ),
     }
 }
