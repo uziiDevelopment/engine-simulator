@@ -11,6 +11,7 @@ use super::config::{EngineConfig, EngineLayout, ENGINES};
 use super::cooling::{CoolantConfig, CoolantState};
 use super::cylinder::CylinderState;
 use super::fuel::{Fuel, FUELS};
+use super::gearbox::{GearboxConfig, GearboxState};
 use super::manifold::Manifold;
 use super::oil::{OilConfig, OilState};
 use super::thermo::{P_ATM, R_AIR, T_ATM, T_EXH_AMBIENT};
@@ -66,6 +67,10 @@ pub struct EngineCore {
 
     // ── Forced induction ────────────────────────────────────────────────────
     pub turbos: Vec<TurboState>,
+
+    // ── 6-speed manual gearbox + vehicle ────────────────────────────────────
+    pub gearbox_config: GearboxConfig,
+    pub gearbox: GearboxState,
 
     // ── Lubrication ─────────────────────────────────────────────────────────
     pub oil_config: OilConfig,
@@ -175,6 +180,8 @@ impl EngineCore {
             intake,
             exhaust,
             turbos,
+            gearbox_config: GearboxConfig::default(),
+            gearbox: GearboxState::default(),
 
             oil_config,
             oil,
@@ -253,6 +260,9 @@ impl EngineCore {
         self.turbos = config.turbos.iter()
             .map(|cfg| TurboState::fresh(cfg))
             .collect();
+
+        self.gearbox = GearboxState::default();
+        // Keep gearbox_config across engine swaps — same vehicle.
 
         self.config = config;
         self.config_idx = idx;

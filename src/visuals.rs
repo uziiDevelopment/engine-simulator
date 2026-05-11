@@ -23,23 +23,34 @@ impl Plugin for VisualsPlugin {
             .add_systems(
                 Update,
                 (
-                    rebuild_engine_visuals,
-                    animate::animate_crank,
-                    animate::animate_drivetrain,
-                    animate::animate_pistons,
-                    animate::animate_rods,
-                    animate::animate_valves,
-                    animate::animate_cylinder_gas,
-                    animate::animate_manifolds,
-                    animate::animate_turbo,
-                    animate::animate_damage,
-                    animate::apply_flywheel_material,
-                    animate::apply_clutch_material,
-                    sync_damage_visual_materials,
-                    discover_rod_attachments,
-                    animate::discover_turbo_wheels,
+                    (
+                        rebuild_engine_visuals,
+                        animate::animate_crank,
+                        animate::animate_drivetrain,
+                        animate::animate_pistons,
+                        animate::animate_rods,
+                        animate::animate_valves,
+                        animate::animate_cylinder_gas,
+                        animate::animate_manifolds,
+                        animate::animate_turbo,
+                        animate::animate_damage,
+                        animate::apply_flywheel_material,
+                        animate::apply_clutch_material,
+                        sync_damage_visual_materials,
+                        discover_rod_attachments,
+                        animate::discover_turbo_wheels,
+                        animate::align_turbo_to_outlet,
+                    ).chain(),
+                    (
+                        animate::animate_gearbox_shafts,
+                        animate::animate_gear_cogs,
+                        animate::animate_engagement_sleeves,
+                        animate::animate_clutch_pedal,
+                        animate::animate_throttle_pedal,
+                        animate::animate_shift_lever,
+                        animate::animate_housing_damage,
+                    ).chain(),
                 )
-                    .chain()
                     .after(crate::engine::engine_step),
             )
             .add_plugins(particles::ParticlesPlugin);
@@ -106,6 +117,21 @@ pub struct TurboGlbRoot {
 /// the spin nodes. Prevents re-scanning every frame.
 #[derive(Component)]
 pub struct TurboWheelsDiscovered;
+
+/// Marker on an empty spatial entity placed at the world position of an
+/// exhaust manifold's collector outlet. `align_turbo_to_outlet` snaps the
+/// turbo's `exhaust_mount` GLB node to this point.
+#[derive(Component)]
+pub struct ExhaustOutlet {
+    /// Which turbo (by `turbo_idx`) this outlet should attach to, if any.
+    pub turbo_idx: Option<usize>,
+    pub world_pos: Vec3,
+}
+
+/// Sentinel inserted on a `TurboGlbRoot` once its `exhaust_mount` node has
+/// been snapped to the matching `ExhaustOutlet`. Prevents re-running.
+#[derive(Component)]
+pub struct TurboMountAligned;
 
 /// The translucent housing material — tinted by boost pressure.
 #[derive(Component)]
@@ -256,3 +282,66 @@ pub fn discover_rod_attachments(
         }
     }
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// 6-Speed Manual Transmission visual components
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Which shaft a cog rides on. Mainshaft cogs are free-spinning in real life
+/// (locked only when a sleeve engages); here we just spin them all kinematically.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ShaftKind { Layshaft, Mainshaft }
+
+/// A single visible gear cog within the gearbox.
+#[derive(Component)]
+pub struct GearCog {
+    pub shaft: ShaftKind,
+    /// Forward gear index 0..=5, or `None` for the reverse idler.
+    pub gear: Option<u8>,
+}
+
+/// Root entity for the layshaft (countershaft) — spins as one rigid body.
+#[derive(Component)] pub struct Layshaft;
+/// Root entity for the mainshaft (output) — spins at drivetrain_omega.
+#[derive(Component)] pub struct Mainshaft;
+/// Reverse idler cog (sits between mainshaft and layshaft on reverse).
+#[derive(Component)] pub struct ReverseIdler;
+
+/// A sliding engagement sleeve. `hub_idx` 0 = 1-2, 1 = 3-4, 2 = 5-6, 3 = R.
+#[derive(Component)]
+pub struct EngagementSleeve {
+    pub hub_idx: u8,
+    /// X position when in neutral.
+    pub neutral_x: f32,
+    /// How far the sleeve slides in either direction to engage the nearest cog.
+    pub engage_offset: f32,
+}
+
+/// Semi-transparent gearbox housing — tinted red as damage grows.
+#[derive(Component)]
+pub struct GearboxHousing {
+    pub material: Handle<StandardMaterial>,
+    pub base_color: Color,
+}
+
+/// Marker on the cockpit rig's root entity (so we can move/hide the whole rig).
+#[derive(Component)] pub struct Cockpit;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PedalKind { Clutch, Throttle }
+
+/// A draggable pedal. `pivot_offset` is the local offset from the pedal's
+/// transform origin to its hinge point (so we can rotate about the top edge).
+#[derive(Component)]
+pub struct PedalControl {
+    pub kind: PedalKind,
+    /// Max depression angle in radians (when fully pressed).
+    pub max_angle: f32,
+}
+
+/// Marker on the shift lever rod (rotates about its base).
+#[derive(Component) ] pub struct ShiftLever;
+/// Marker on the shift knob (the spherical grab target).
+#[derive(Component)] pub struct ShiftKnob;
+/// Marker on the cosmetic H-pattern guide plate. (No animation — for layout reference.)
+#[derive(Component)] pub struct HPatternGuide;

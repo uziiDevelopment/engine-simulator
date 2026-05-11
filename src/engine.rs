@@ -43,6 +43,7 @@ pub mod cooling;
 mod cylinder;
 pub mod dyno;
 mod fuel;
+pub mod gearbox;
 mod geometry;
 mod manifold;
 pub mod material;
@@ -59,6 +60,7 @@ pub use crank::*;
 pub use cylinder::*;
 pub use dyno::*;
 pub use fuel::*;
+pub use gearbox::*;
 pub use geometry::*;
 pub use manifold::*;
 pub use material::*;
@@ -84,13 +86,147 @@ impl Plugin for EnginePlugin {
 
 /// Hold **E** to engage the starter.  When the engine is already running on its
 /// own combustion, the starter is disconnected automatically.
-fn engine_input(keys: Res<ButtonInput<KeyCode>>, mut core: ResMut<EngineCore>) {
+fn engine_input(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut core: ResMut<EngineCore>,
+) {
     core.starter_active = keys.pressed(KeyCode::KeyE) && core.run_state != RunState::Running;
 
-    // Holding Shift disengages the clutch immediately
-    if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+    // Throttle bound to W: hold W → ramps toward 100%, release → ramps back
+    // toward 0%. Press rate is slower than release so the pedal feels weighty
+    // going down but lifts crisply.
+    let w_held = keys.pressed(KeyCode::KeyW);
+    let dt_input = time.delta_seconds();
+    const THROTTLE_PRESS_RATE: f32 = 1.6;   // 0 → 1 in ~0.62 s
+    const THROTTLE_RELEASE_RATE: f32 = 4.0; // 1 → 0 in ~0.25 s
+
+    // Holding Shift: dip clutch fully and snap throttle to 0 (safe shift
+    // gesture, overrides W). Releasing Shift re-engages the clutch; the
+    // throttle then resumes ramping toward whatever W is doing.
+    let shift_held = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let shift_released =
+        keys.just_released(KeyCode::ShiftLeft) || keys.just_released(KeyCode::ShiftRight);
+    if shift_held {
         core.clutch_engagement = 0.0;
+        core.throttle = 0.0;
+    } else {
+        if shift_released {
+            core.clutch_engagement = 1.0;
+        }
+        let target = if w_held { 1.0 } else { 0.0 };
+        let rate = if w_held { THROTTLE_PRESS_RATE } else { THROTTLE_RELEASE_RATE };
+        let max_step = rate * dt_input;
+        let delta = (target - core.throttle).clamp(-max_step, max_step);
+        core.throttle = (core.throttle + delta).clamp(0.0, 1.0);
     }
+
+    // ── Number / letter shortcuts: snap lever directly to that gate ──────
+    use crate::engine::gearbox::{
+        constrain_lever, gate_for_position, snapped_lever_for, GearSelector,
+    };
+    let new_sel = if keys.just_pressed(KeyCode::Digit0) || keys.just_pressed(KeyCode::KeyN) {
+        Some(GearSelector::Neutral)
+    } else if keys.just_pressed(KeyCode::Digit1) { Some(GearSelector::Gear(1)) }
+    else if keys.just_pressed(KeyCode::Digit2) { Some(GearSelector::Gear(2)) }
+    else if keys.just_pressed(KeyCode::Digit3) { Some(GearSelector::Gear(3)) }
+    else if keys.just_pressed(KeyCode::Digit4) { Some(GearSelector::Gear(4)) }
+    else if keys.just_pressed(KeyCode::Digit5) { Some(GearSelector::Gear(5)) }
+    else if keys.just_pressed(KeyCode::Digit6) { Some(GearSelector::Gear(6)) }
+    else if keys.just_pressed(KeyCode::KeyR) { Some(GearSelector::Reverse) }
+    else { None };
+
+    if let Some(sel) = new_sel {
+        try_select_gear(&mut *core, sel);
+        core.gearbox.lever_pos = snapped_lever_for(sel);
+        if matches!(sel, GearSelector::Reverse) {
+            core.gearbox.reverse_armed = true;
+        } else if !matches!(sel, GearSelector::Neutral) {
+            core.gearbox.reverse_armed = false;
+        }
+    }
+
+    // ── Arrow-key shifter: fully discrete H-pattern moves ───────────────
+    //
+    // Each tap snaps the lever to the next gate position. Real-car semantics:
+    //   • Up/Down on rail      → push lever into top/bottom gate of current column
+    //   • Up/Down while in gate → pull lever back to neutral on the same column
+    //   • Left/Right on rail   → step one column over
+    //   • Left/Right in gate   → ignored (gate plate blocks it)
+    let _ = time.delta_seconds();
+    let cur = core.gearbox.lever_pos;
+    let on_rail = cur.y.abs() < 0.35;
+    let col_idx: usize = if cur.x < -0.5 { 0 } else if cur.x > 0.5 { 2 } else { 1 };
+    let col_centres = [-1.0_f32, 0.0, 1.0];
+    let mut next_lever: Option<Vec2> = None;
+
+    if keys.just_pressed(KeyCode::ArrowUp) {
+        if on_rail {
+            if matches!(core.gearbox.selector, GearSelector::Neutral)
+                && col_idx == 0
+                && core.gearbox.reverse_armed
+            {
+                next_lever = Some(Vec2::new(-1.4, 1.3));
+            } else {
+                if matches!(core.gearbox.selector, GearSelector::Neutral) && col_idx == 1 {
+                    core.gearbox.reverse_armed = true;
+                }
+                next_lever = Some(Vec2::new(col_centres[col_idx], 1.0));
+            }
+        } else if cur.y < 0.0 {
+            next_lever = Some(Vec2::new(cur.x, 0.0));
+        }
+    }
+    if keys.just_pressed(KeyCode::ArrowDown) {
+        if on_rail {
+            next_lever = Some(Vec2::new(col_centres[col_idx], -1.0));
+        } else if cur.y > 0.0 {
+            next_lever = Some(Vec2::new(cur.x, 0.0));
+        }
+    }
+    if keys.just_pressed(KeyCode::ArrowLeft) && on_rail {
+        let new_col = col_idx.saturating_sub(1);
+        next_lever = Some(Vec2::new(col_centres[new_col], 0.0));
+    }
+    if keys.just_pressed(KeyCode::ArrowRight) && on_rail {
+        let new_col = (col_idx + 1).min(2);
+        next_lever = Some(Vec2::new(col_centres[new_col], 0.0));
+    }
+
+    if let Some(next) = next_lever {
+        core.gearbox.lever_pos = next;
+        let sel = gate_for_position(next, core.gearbox.reverse_armed);
+        if sel != core.gearbox.selector {
+            try_select_gear(&mut *core, sel);
+            if !matches!(sel, GearSelector::Neutral | GearSelector::Reverse) {
+                core.gearbox.reverse_armed = false;
+            }
+        }
+    }
+    // Keep constrain_lever referenced from this module (still used by mouse path
+    // via re-export); silence the unused-import warning when keyboard path drops it.
+    let _ = constrain_lever;
+}
+
+/// Apply a gear selection from any input source, running the no-clutch grind
+/// check before committing.
+pub fn try_select_gear(core: &mut EngineCore, sel: crate::engine::gearbox::GearSelector) {
+    if core.gearbox.selector == sel { return; }
+    // No-clutch grind: substantial engagement + non-zero slip at the input
+    // shaft makes the change a destructive hard-engage.
+    if core.clutch_engagement > 0.2 && sel != crate::engine::gearbox::GearSelector::Neutral {
+        let cfg_ratio = core.gearbox_config.total_ratio(sel);
+        if let Some(r) = cfg_ratio {
+            let target_input_omega = core.gearbox.vehicle_omega * r;
+            let slip = core.omega - target_input_omega;
+            if slip.abs() > 30.0 {
+                let impulse = crate::engine::gearbox::apply_grind_shock(&mut core.gearbox, slip);
+                // Spike both shafts away from each other for a brief visual jolt
+                core.omega = (core.omega - impulse.signum() * impulse.min(50.0)).max(0.0);
+            }
+        }
+    }
+    core.gearbox.selector = sel;
 }
 
 /// Step the entire engine forward by one frame, with `time_scale` applied for slow-mo.
@@ -479,45 +615,89 @@ pub fn engine_step(
         // The pure engine output torque (flywheel torque)
         let engine_flywheel_torque = tau_total;
 
-        // ── Clutch & Drivetrain Physics ──────────────────────────────────
+        // ── Clutch torque (slip × stiffness, clamped by engagement/fade/wear) ─
         let slip = core.omega - core.drivetrain_omega;
 
         // Heat-based fade: capacity drops above ~500K (227°C)
         let fade_factor = ((1000.0 - core.clutch_temp) / 500.0).clamp(0.0, 1.0);
+        let wear_factor = crate::engine::gearbox::clutch_wear_factor(&core.gearbox);
 
-        // Torque capacity scales with engagement and thermal fade
-        let max_clutch_torque = core.clutch_engagement * core.config.clutch_max_torque * fade_factor;
-        
+        // Torque capacity scales with engagement, thermal fade, and irreversible wear
+        let max_clutch_torque =
+            core.clutch_engagement * core.config.clutch_max_torque * fade_factor * wear_factor;
+
         // The clutch tries to zero the slip.
         let clutch_torque = (slip * 50.0).clamp(-max_clutch_torque, max_clutch_torque);
 
         // Heat generation (P = T * Δω) and cooling (Newton's law)
         let heat_generated_w = (clutch_torque * slip).abs();
         let cooling_w = (core.clutch_temp - 300.0) * core.config.clutch_cooling_coeff;
-        
+
         let net_heat_w = heat_generated_w - cooling_w;
         core.clutch_temp += (net_heat_w / core.config.clutch_thermal_mass) * dt;
         core.clutch_temp = core.clutch_temp.max(300.0);
 
+        // Clutch wear (irreversible) — extends the existing thermal model
+        let clutch_temp_snap = core.clutch_temp;
+        crate::engine::gearbox::step_clutch_wear(&mut core.gearbox, clutch_temp_snap, dt);
+
         // Engine loses torque to the clutch
         tau_total -= clutch_torque;
 
-        // Drivetrain gains torque from the clutch, minus its own friction/load
-        let mut drivetrain_tau = clutch_torque;
-        drivetrain_tau -= core.drivetrain_omega * 0.05; // light viscous drag
+        // ── Gearbox + vehicle load ───────────────────────────────────────
+        // Snapshot inputs we need before the mutable borrow of `core.gearbox`.
+        let redline_omega = core.config.redline_rpm * TAU / 60.0;
+        let drivetrain_inertia_base = core.config.drivetrain_inertia;
+        let drivetrain_omega_now = core.drivetrain_omega;
+
+        let gb_cfg = core.gearbox_config.clone();
+        let gb_out = crate::engine::gearbox::step_gearbox(
+            &gb_cfg,
+            &mut core.gearbox,
+            clutch_torque,
+            drivetrain_inertia_base,
+            drivetrain_omega_now,
+            redline_omega,
+            dt,
+        );
+
+        let mut drivetrain_tau = gb_out.drivetrain_tau;
 
         // ── Dyno absorption brake ────────────────────────────────────────
         if dyno.active {
-            // Dyno now brakes the drivetrain side (simulating a chassis dyno)
             drivetrain_tau -= dyno.absorption_torque;
         }
 
-        let drivetrain_accel = drivetrain_tau / core.config.drivetrain_inertia;
+        // Gearbox damage: above 0.9 it drags significantly
+        if core.gearbox.gearbox_damage > 0.9 {
+            drivetrain_tau -= drivetrain_omega_now.signum() * 30.0 * core.gearbox.gearbox_damage;
+        }
+
+        // Money-shift seizure: spike rod_damage on a representative cylinder so
+        // the existing failure pipeline (bearing.rs / cylinder.rs) takes over.
+        if gb_out.money_shift && !core.cylinders.is_empty() {
+            let idx = core.cylinders.len() / 2;
+            core.cylinders[idx].rod_damage = 1.0;
+            core.engine_seized = true;
+            core.seizure_reason = "Money-shift: engine over-revved past redline".to_string();
+        }
+
+        let drivetrain_accel = drivetrain_tau / gb_out.drivetrain_inertia_eff.max(1e-3);
         core.drivetrain_omega += drivetrain_accel * dt;
-        if core.drivetrain_omega < 0.0 { core.drivetrain_omega = 0.0; }
+
+        // Allow reverse drivetrain omega only if engaged in reverse; otherwise clamp >= 0
+        let in_reverse = matches!(core.gearbox.selector, crate::engine::gearbox::GearSelector::Reverse);
+        if !in_reverse && core.drivetrain_omega < 0.0 {
+            core.drivetrain_omega = 0.0;
+        }
 
         let d_dt_angle = core.drivetrain_omega * dt;
         core.drivetrain_angle = (core.drivetrain_angle + d_dt_angle).rem_euclid(TAU);
+
+        // Propagate to vehicle speed + cosmetic cog angles
+        let eng_omega = core.omega;
+        let drv_omega = core.drivetrain_omega;
+        crate::engine::gearbox::post_integrate(&gb_cfg, &mut core.gearbox, eng_omega, drv_omega, dt);
 
         // ── Integrate the only true degree of freedom: the crank ─────────
         core.omega += tau_total / core.config.flywheel_inertia * dt;

@@ -10,7 +10,9 @@
       "Bash(cargo build *)",
       "Bash(Select-Object FullName)",
       "Bash(Sort-Object FullName)",
-      "Bash(ls \"C:/Users/jq/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/\" | grep \"bevy_mod_pick\\\\|bevy_picking\" 2>&1)"
+      "Bash(ls \"C:/Users/jq/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/\" | grep \"bevy_mod_pick\\\\|bevy_picking\" 2>&1)",
+      "Bash(findstr /N \"^\" \"D:\\\\Development\\\\[RUST] Development\\\\Vanilla\\\\engine-simulator\\\\src\\\\visuals\\\\animate.rs\")",
+      "Bash(findstr /R \"^[0-9]*:$\")"
     ]
   }
 }

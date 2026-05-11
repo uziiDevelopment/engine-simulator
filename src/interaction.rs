@@ -33,8 +33,13 @@ use bevy_mod_picking::prelude::*;
 use bevy_mod_picking::focus::HoverMap;
 
 use crate::engine::EngineCore;
+use crate::engine::gearbox::{
+    constrain_lever, gate_for_position, snapped_lever_for, GearSelector,
+};
+use crate::engine::try_select_gear;
 use crate::visuals::{
-    ConRod, Crankshaft, Clutch, EngineVisual, Flywheel, Piston,
+    ConRod, Crankshaft, Clutch, EngineVisual, Flywheel, PedalControl, PedalKind,
+    Piston, ShiftKnob,
 };
 
 pub struct InteractionPlugin;
@@ -75,6 +80,8 @@ pub struct InteractionState {
 enum PartKind {
     Rotating,   // Crank, flywheel, clutch — applies torque to omega
     Translating(usize), // Piston/rod idx — applies force along cylinder axis
+    Pedal(PedalKind),
+    ShiftKnob,
     Generic,
 }
 
@@ -85,11 +92,19 @@ fn classify(
     q_clutch: &Query<(), With<Clutch>>,
     q_piston: &Query<&Piston>,
     q_rod: &Query<&ConRod>,
+    q_pedal: &Query<&PedalControl>,
+    q_knob: &Query<(), With<ShiftKnob>>,
     q_parent: &Query<&Parent>,
 ) -> PartKind {
     // Walk up hierarchy to find a tagged ancestor
     let mut cur = entity;
     for _ in 0..8 {
+        if q_knob.get(cur).is_ok() {
+            return PartKind::ShiftKnob;
+        }
+        if let Ok(p) = q_pedal.get(cur) {
+            return PartKind::Pedal(p.kind);
+        }
         if q_crank.get(cur).is_ok() || q_flywheel.get(cur).is_ok() || q_clutch.get(cur).is_ok() {
             return PartKind::Rotating;
         }
@@ -117,6 +132,8 @@ fn handle_drag_events(
     q_clutch:   Query<(), With<Clutch>>,
     q_piston:   Query<&Piston>,
     q_rod:      Query<&ConRod>,
+    q_pedal:    Query<&PedalControl>,
+    q_knob:     Query<(), With<ShiftKnob>>,
     q_parent:   Query<&Parent>,
     mut egui:   EguiContexts,
 ) {
@@ -139,7 +156,8 @@ fn handle_drag_events(
         let delta = ev.event.delta; // screen-space pixels
 
         let kind = classify(
-            dragged, &q_crank, &q_flywheel, &q_clutch, &q_piston, &q_rod, &q_parent,
+            dragged, &q_crank, &q_flywheel, &q_clutch, &q_piston, &q_rod,
+            &q_pedal, &q_knob, &q_parent,
         );
 
         match kind {
@@ -149,10 +167,52 @@ fn handle_drag_events(
                 core.omega = (core.omega + impulse).clamp(-500.0, 5000.0);
             }
             PartKind::Translating(_cyl_idx) => {
-                // Piston: vertical drag (up = toward TDC) spins crank forward,
-                // horizontal drag also contributes. Keep same gentle scale.
                 let impulse = delta.x * 0.35 - delta.y * 0.25;
                 core.omega = (core.omega + impulse).clamp(-500.0, 5000.0);
+            }
+            PartKind::Pedal(kind) => {
+                // Drag downward (positive screen-Y) depresses the pedal.
+                // 0.006 per pixel → ~170 px from rest to fully pressed.
+                let depress_delta = delta.y * 0.006;
+                match kind {
+                    PedalKind::Clutch => {
+                        // Engagement inversely linked to depression
+                        let new_engagement = (core.clutch_engagement - depress_delta).clamp(0.0, 1.0);
+                        core.clutch_engagement = new_engagement;
+                    }
+                    PedalKind::Throttle => {
+                        let new_throttle = (core.throttle + depress_delta).clamp(0.0, 1.0);
+                        core.throttle = new_throttle;
+                    }
+                }
+            }
+            PartKind::ShiftKnob => {
+                // Map 2-D screen drag into the H-pattern plane.
+                // X → left/right gate selection. Y → forward/back within gate.
+                // Negative screen-Y is "up" (forward gate).
+                // ~50 px per H-pattern unit feels snappy without overshooting
+                // gates on quick flicks.
+                let dx = delta.x * 0.02;
+                let dy = -delta.y * 0.02;
+                let prev = core.gearbox.lever_pos;
+                let raw = prev + Vec2::new(dx, dy);
+                let lever = constrain_lever(raw, prev, core.gearbox.reverse_armed);
+
+                // Reverse-arm latch: same gesture as the keyboard path.
+                if matches!(core.gearbox.selector, GearSelector::Neutral)
+                    && lever.y > 0.9 && lever.x.abs() < 0.3
+                {
+                    core.gearbox.reverse_armed = true;
+                }
+
+                core.gearbox.lever_pos = lever;
+                let sel = gate_for_position(lever, core.gearbox.reverse_armed);
+                if sel != core.gearbox.selector {
+                    try_select_gear(&mut *core, sel);
+                    if !matches!(sel, GearSelector::Neutral | GearSelector::Reverse) {
+                        core.gearbox.reverse_armed = false;
+                    }
+                }
             }
         }
     }
@@ -161,6 +221,9 @@ fn handle_drag_events(
         if ev.button != PointerButton::Primary { continue; }
         if state.dragged == Some(ev.target) {
             state.dragged = None;
+            // Snap lever back to its slotted gate position so the visible
+            // lever reads the engaged gear when released.
+            core.gearbox.lever_pos = snapped_lever_for(core.gearbox.selector);
         }
     }
 }

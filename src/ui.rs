@@ -139,6 +139,45 @@ fn ui_panel(
                         .logarithmic(true),
                 );
 
+                // ── Transmission ─────────────────────────────────────────────
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("Transmission").strong());
+                {
+                    use crate::engine::gearbox::GearSelector;
+                    let sel = core.gearbox.selector;
+                    let label = sel.label();
+                    let label_col = match sel {
+                        GearSelector::Reverse => egui::Color32::from_rgb(220, 100, 100),
+                        GearSelector::Neutral => egui::Color32::from_rgb(180, 180, 180),
+                        _ => egui::Color32::from_rgb(120, 220, 140),
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(label)
+                                .color(label_col)
+                                .strong()
+                                .size(28.0),
+                        );
+                        ui.vertical(|ui| {
+                            ui.label(format!("{:>5.1} km/h", core.gearbox.road_speed_kmh()));
+                            ui.label(format!(
+                                "clutch wear {:>3.0}%  box dmg {:>3.0}%",
+                                core.gearbox.clutch_wear * 100.0,
+                                core.gearbox.gearbox_damage * 100.0,
+                            ));
+                        });
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.small_button("R").clicked() { crate::engine::try_select_gear(&mut *core,GearSelector::Reverse); }
+                        if ui.small_button("N").clicked() { crate::engine::try_select_gear(&mut *core,GearSelector::Neutral); }
+                        for g in 1u8..=6 {
+                            if ui.small_button(format!("{}", g)).clicked() {
+                                crate::engine::try_select_gear(&mut *core,GearSelector::Gear(g));
+                            }
+                        }
+                    });
+                }
+
                 // ── Time scale ───────────────────────────────────────────────
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new("Time Scale").strong());
