@@ -194,25 +194,47 @@ pub fn engine_step(
 
         if config.turbo_enabled() {
             // Turbo path: each turbo's turbine pulls from exhaust + spins compressor.
-            // Multiple turbos work in parallel, each contributing to total boost.
+            // Multiple turbos work in parallel, sharing exhaust flow and merging boost.
             let throttle_area = config.throttle_area(throttle_eff);
 
-            // Find the first enabled turbo index for throttle flow
-            let first_enabled_idx = config.turbos.iter()
+            // Count enabled turbos for exhaust flow sharing
+            let enabled_count = config.turbos.iter()
                 .enumerate()
-                .find(|(i, cfg)| cfg.enabled && *i < turbos.len())
-                .map(|(i, _)| i);
+                .filter(|(i, cfg)| cfg.enabled && *i < turbos.len())
+                .count() as f32;
 
-            // Step all enabled turbos
+            // Each turbo sees an equal fraction of the exhaust flow
+            let exhaust_fraction = if enabled_count > 0.0 { 1.0 / enabled_count } else { 1.0 };
+
+            // Step all enabled turbos, collecting exhaust mass flow
+            let mut total_exhaust_flow = 0.0_f32;
             for (i, turbo) in turbos.iter_mut().enumerate() {
                 if i < config.turbos.len() && config.turbos[i].enabled {
-                    turbo::step_turbo(&config.turbos[i], turbo, intake, exhaust, throttle_eff, dt);
+                    let m_dot = turbo::step_turbo(
+                        &config.turbos[i], turbo, intake, exhaust,
+                        exhaust_fraction, throttle_eff, dt
+                    );
+                    total_exhaust_flow += m_dot;
                 }
             }
 
-            // Use the first enabled turbo's boost plenum for throttle flow
-            // (in a real multi-turbo setup, they would merge into a common plenum)
-            if let Some(idx) = first_enabled_idx {
+            // Apply total exhaust mass flow (all turbos combined)
+            exhaust.mass = (exhaust.mass - total_exhaust_flow * dt).max(1e-9);
+            // Newton-cool toward ambient pipe temperature.
+            let cool_rate = (1.6 * dt).min(1.0);
+            exhaust.temperature += (thermo::T_EXH_AMBIENT - exhaust.temperature) * cool_rate;
+            exhaust.flow_signal = exhaust.flow_signal * 0.6 + total_exhaust_flow * 0.4;
+
+            // Find the turbo with highest boost pressure for throttle flow
+            // (in reality they merge to a common plenum, so use the highest pressure)
+            let highest_boost_idx = turbos.iter().enumerate()
+                .filter(|(i, _)| i < &config.turbos.len() && config.turbos[*i].enabled)
+                .max_by(|(_, a), (_, b)| {
+                    a.boost.pressure().partial_cmp(&b.boost.pressure()).unwrap()
+                })
+                .map(|(i, _)| i);
+
+            if let Some(idx) = highest_boost_idx {
                 if let Some(turbo) = turbos.get_mut(idx) {
                     turbo::throttle_flow_boosted(throttle_area, &mut turbo.boost, intake, throttle_eff, dt);
                 }

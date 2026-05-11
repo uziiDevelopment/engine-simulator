@@ -111,16 +111,42 @@ impl TurboConfig {
         let ratio = (total_displacement_m3 / base_disp).clamp(0.25, 32.0);
         let sqrt_ratio = ratio.sqrt();
 
-        // Turbine and wastegate both scale with √ratio to maintain proper
-        // proportionality for boost control. If wastegate scales linearly
-        // while turbine scales with √ratio, the wastegate becomes oversized
-        // on larger engines, causing poor boost regulation and overboost.
+        // Scale physical size parameters relative to their defaults.
+        // This preserves any manually-set values (they get scaled proportionally).
+        // Only scale fields that haven't been explicitly customized.
+        let default = TurboConfig::default();
+
         // Shaft inertia scales linearly to prevent overspeed.
-        self.shaft_inertia = 5.0e-6 * ratio;
-        self.turbine_area = 0.00060 * sqrt_ratio;
-        self.wastegate_area = 0.00040 * sqrt_ratio; // Fixed: was linear, now √ratio
-        self.compressor_area = 0.00080 * sqrt_ratio; // Also √ratio for consistency
-        self.boost_plenum_volume = 0.0010 * ratio.powf(0.7);
+        if self.shaft_inertia == default.shaft_inertia {
+            self.shaft_inertia = 5.0e-6 * ratio;
+        } else {
+            self.shaft_inertia *= ratio;
+        }
+
+        // Flow areas scale with √ratio for proper proportionality.
+        if self.turbine_area == default.turbine_area {
+            self.turbine_area = 0.00060 * sqrt_ratio;
+        } else {
+            self.turbine_area *= sqrt_ratio;
+        }
+
+        if self.wastegate_area == default.wastegate_area {
+            self.wastegate_area = 0.00040 * sqrt_ratio;
+        } else {
+            self.wastegate_area *= sqrt_ratio;
+        }
+
+        if self.compressor_area == default.compressor_area {
+            self.compressor_area = 0.00080 * sqrt_ratio;
+        } else {
+            self.compressor_area *= sqrt_ratio;
+        }
+
+        if self.boost_plenum_volume == default.boost_plenum_volume {
+            self.boost_plenum_volume = 0.0010 * ratio.powf(0.7);
+        } else {
+            self.boost_plenum_volume *= ratio.powf(0.7);
+        }
 
         self
     }
@@ -186,18 +212,24 @@ pub fn step_turbo(
     cfg: &TurboConfig,
     state: &mut TurboState,
     intake: &Manifold,         // read-only: needed for BOV trigger
-    exhaust: &mut Manifold,
+    exhaust: &Manifold,        // read-only: flow calculated but not applied here
+    exhaust_flow_fraction: f32, // Fraction of total exhaust flow this turbo sees (1.0 for single turbo)
     throttle: f32,
     dt: f32,
-) {
-    if !cfg.enabled { return; }
+) -> f32 {  // Returns mass flow removed from exhaust for this turbo
+    if !cfg.enabled { return 0.0; }
 
     // ── Wastegate PID controller with feedforward ───────────────────────
     let boost_actual = state.boost_gauge_pa();
     let err = boost_actual - cfg.target_boost_pa;
 
     // Derivative term: respond to rising boost quickly (prevents overshoot)
-    let boost_rate = (boost_actual - state.last_boost) / dt.max(1e-6);
+    // On first frame (last_boost == 0), skip derivative to avoid spike
+    let boost_rate = if state.last_boost > 0.0 {
+        (boost_actual - state.last_boost) / dt.max(1e-6)
+    } else {
+        0.0  // First frame, no derivative
+    };
     state.last_boost = boost_actual;
 
     // Anti-windup: clamp integral.
@@ -232,20 +264,14 @@ pub fn step_turbo(
     let area_wg   = cfg.wastegate_area * state.wastegate_open_frac;
 
     // Mass flow through each path (positive = exhaust → atmosphere).
+    // Scale by exhaust_flow_fraction so multiple turbos share the exhaust.
     let m_dot_turb = if p_e > P_ATM {
-        orifice_flow(p_e, P_ATM, t_e, area_turb, gamma_e, R_AIR)
+        orifice_flow(p_e, P_ATM, t_e, area_turb, gamma_e, R_AIR) * exhaust_flow_fraction
     } else { 0.0 };
     let m_dot_wg = if p_e > P_ATM {
-        orifice_flow(p_e, P_ATM, t_e, area_wg, gamma_e, R_AIR)
+        orifice_flow(p_e, P_ATM, t_e, area_wg, gamma_e, R_AIR) * exhaust_flow_fraction
     } else { 0.0 };
     let m_dot_total = m_dot_turb + m_dot_wg;
-
-    // Remove mass from exhaust plenum.
-    exhaust.mass = (exhaust.mass - m_dot_total * dt).max(1e-9);
-    // Newton-cool toward ambient pipe temperature.
-    let cool_rate = (1.6 * dt).min(1.0);
-    exhaust.temperature += (T_EXH_AMBIENT - exhaust.temperature) * cool_rate;
-    exhaust.flow_signal = exhaust.flow_signal * 0.6 + m_dot_total * 0.4;
 
     // Turbine isentropic enthalpy drop.
     let pr_t = (P_ATM / p_e.max(1e-3)).clamp(0.0, 1.0);
@@ -333,6 +359,9 @@ pub fn step_turbo(
         if state.bov_envelope < 0.0 { state.bov_envelope = 0.0; }
     }
     state.last_throttle = throttle;
+
+    // Return total mass flow removed from exhaust for this turbo
+    m_dot_total
 }
 
 /// Throttle plate variant that pulls from the boost plenum (turbocharged path).
