@@ -257,7 +257,11 @@ pub fn discover_turbo_wheels(
         while let Some(child) = stack.pop() {
             if let Ok(name) = q_named.get(child) {
                 let n = name.as_str();
-                if n.contains("Intake_Compressor_Turbine") || n.contains("Exhaust_Turbine") {
+                // Case-insensitive partial match so minor GLB name variations don't break it.
+                let nl = n.to_lowercase();
+                let is_spin_node = nl.contains("intake_compressor") || nl.contains("exhaust_turbine");
+                if is_spin_node {
+                    bevy::log::info!("Turbo spin node found: '{}'", n);
                     commands.entity(child).insert(TurbineWheel { turbo_idx: glb_root.turbo_idx });
                     found_count += 1;
                 }
@@ -267,8 +271,6 @@ pub fn discover_turbo_wheels(
             }
         }
 
-        // We expect exactly 2 spin nodes. Only mark done once we've found both
-        // (GLB hierarchy may not be fully spawned on the first frame).
         if found_count >= 2 {
             commands.entity(root_entity).insert(TurboWheelsDiscovered);
         }

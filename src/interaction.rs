@@ -144,19 +144,15 @@ fn handle_drag_events(
 
         match kind {
             PartKind::Rotating | PartKind::Generic => {
-                // Map horizontal drag to angular impulse.
-                // Positive drag right → positive omega (forward spin).
-                let torque_impulse = delta.x * 8.0; // rad/s per pixel
-                core.omega = (core.omega + torque_impulse).clamp(-500.0, 5000.0);
+                // Horizontal drag → spin. 0.35 rad/s per pixel feels natural.
+                let impulse = delta.x * 0.35;
+                core.omega = (core.omega + impulse).clamp(-500.0, 5000.0);
             }
-            PartKind::Translating(cyl_idx) => {
-                // Vertical drag moves the piston; map to crank angle impulse.
-                // Dragging up pushes piston toward TDC — equivalent to pushing omega forward.
-                // The sign: screen Y is inverted vs world Y, so negative delta.y = up.
-                let angle_impulse = -delta.y * 0.015; // rad per pixel
-                let torque = delta.x * 4.0;
-                core.omega = (core.omega + torque).clamp(-500.0, 5000.0);
-                let _ = (cyl_idx, angle_impulse); // crank angle updated naturally via omega
+            PartKind::Translating(_cyl_idx) => {
+                // Piston: vertical drag (up = toward TDC) spins crank forward,
+                // horizontal drag also contributes. Keep same gentle scale.
+                let impulse = delta.x * 0.35 - delta.y * 0.25;
+                core.omega = (core.omega + impulse).clamp(-500.0, 5000.0);
             }
         }
     }

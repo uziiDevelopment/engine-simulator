@@ -72,6 +72,8 @@ pub struct FlowGeometry {
     pub bore_tops: Vec<Vec3>,
     pub bore_tilts: Vec<f32>,
     pub bore_radius: f32,
+    /// One exhaust-outlet path per enabled turbo (turbo outlet → atmosphere).
+    pub turbo_exhaust_paths: Vec<Vec<Vec3>>,
 }
 
 #[derive(Resource, Default)]
@@ -79,6 +81,7 @@ pub struct ParticleSpawnAccum {
     pub intake: f32,
     pub exhaust: f32,
     pub combustion: Vec<f32>,
+    pub turbo: Vec<f32>,
 }
 
 #[derive(Resource, Default)]
@@ -204,6 +207,7 @@ fn rebuild_flow_geometry(
     count.0 = 0;
     accum.intake = 0.0;
     accum.exhaust = 0.0;
+    accum.turbo.clear();
 
     let cfg = &core.config;
     let s = VIS_SCALE;
@@ -295,6 +299,39 @@ fn rebuild_flow_geometry(
         bore_tilts.push(tilt);
     }
 
+    // ── Turbo exhaust outlet paths ─────────────────────────────────────────
+    let enabled_turbos: Vec<usize> = cfg.turbos.iter()
+        .enumerate()
+        .filter(|(_, t)| t.enabled)
+        .map(|(i, _)| i)
+        .take(4)
+        .collect();
+    let total_turbos = enabled_turbos.len();
+    let head_width = ((n as f32 / 2.0).max(1.0) * cfg.cylinder_spacing + 0.08) * s;
+    let mut turbo_exhaust_paths = Vec::new();
+    for (slot, _turbo_idx) in enabled_turbos.iter().enumerate() {
+        // Mirror the position logic from spawn_turbo in parts.rs
+        let (gx, gz) = match (total_turbos, slot) {
+            (1, 0) => ((head_width * 0.5) + 0.45 * s, 0.0_f32),
+            (2, 0) => ((head_width * 0.5) + 0.40 * s, 0.25 * s),
+            (2, 1) => (-(head_width * 0.5) - 0.40 * s, 0.25 * s),
+            (3, 0) => ((head_width * 0.5) + 0.40 * s, 0.0),
+            (3, 1) => (-(head_width * 0.5) - 0.40 * s, 0.0),
+            (3, 2) => ((head_width * 0.5) + 0.40 * s, -0.30 * s),
+            (4, 0) => ((head_width * 0.5) + 0.35 * s, 0.25 * s),
+            (4, 1) => (-(head_width * 0.5) - 0.35 * s, 0.25 * s),
+            (4, 2) => ((head_width * 0.5) + 0.35 * s, -0.25 * s),
+            (4, 3) => (-(head_width * 0.5) - 0.35 * s, -0.25 * s),
+            _ => ((head_width * 0.5) + 0.45 * s + slot as f32 * 0.15 * s, 0.0),
+        };
+        let gy = (cfg.rod_length * s + 0.18 * s) * 0.45;
+        let origin = Vec3::new(gx, gy, gz);
+        // Turbine outlet exits downward in the turbo's local space
+        let outlet = origin + Vec3::new(0.0, -0.18 * s, 0.0);
+        let exhaust_end = outlet + Vec3::new(0.0, -0.35 * s, 0.3 * s);
+        turbo_exhaust_paths.push(vec![origin, outlet, exhaust_end]);
+    }
+
     flow.generation = core.config_generation;
     flow.valid = true;
     flow.intake_paths = intake_paths;
@@ -302,6 +339,7 @@ fn rebuild_flow_geometry(
     flow.bore_tops = bore_tops;
     flow.bore_tilts = bore_tilts;
     flow.bore_radius = cfg.bore * 0.5 * s;
+    flow.turbo_exhaust_paths = turbo_exhaust_paths;
 }
 
 // ── Spawn ────────────────────────────────────────────────────────────────────
@@ -362,6 +400,31 @@ fn spawn_particles(
         let lifetime = PARTICLE_LIFETIME * (0.75 + 0.50 * rng.unit());
         spawn_path_particle(&mut commands, &assets, ParticleKind::Exhaust, pos, vel, lifetime, path.clone());
         count.0 += 1;
+    }
+
+    // ── Turbo exhaust spew ────────────────────────────────────────────────
+    let num_turbos = flow.turbo_exhaust_paths.len();
+    if accum.turbo.len() != num_turbos {
+        accum.turbo = vec![0.0; num_turbos];
+    }
+    for (slot, path) in flow.turbo_exhaust_paths.iter().enumerate() {
+        if path.len() < 2 { continue; }
+        let turbo_state = core.turbos.get(slot);
+        let shaft_omega = turbo_state.map(|t| t.shaft_omega).unwrap_or(0.0);
+        // Particles scale with shaft speed — visible above ~500 rad/s
+        let rate = ((shaft_omega - 300.0) * 0.08).clamp(0.0, 400.0);
+        accum.turbo[slot] = (accum.turbo[slot] + rate * dt).min(60.0);
+        while accum.turbo[slot] >= 1.0 && count.0 < MAX_PARTICLES {
+            accum.turbo[slot] -= 1.0;
+            let jitter = Vec3::new(rng.signed(), rng.signed(), rng.signed()) * 0.03 * VIS_SCALE;
+            let pos = path[0] + jitter;
+            let dir = (path[1] - path[0]).normalize_or_zero();
+            let speed = PARTICLE_BASE_SPEED * EXHAUST_SPEED_MULT * (0.9 + 0.4 * rng.unit());
+            let vel = dir * speed + jitter * 0.5;
+            let lifetime = PARTICLE_LIFETIME * 0.6 * (0.7 + 0.4 * rng.unit());
+            spawn_path_particle(&mut commands, &assets, ParticleKind::Exhaust, pos, vel, lifetime, path.clone());
+            count.0 += 1;
+        }
     }
 
     // ── Combustion bursts ─────────────────────────────────────────────────

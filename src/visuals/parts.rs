@@ -2,6 +2,7 @@
 //! Called on startup and whenever the engine config changes.
 
 use bevy::prelude::*;
+use bevy_mod_picking::prelude::Pickable;
 use std::f32::consts::PI;
 
 use crate::engine::{EngineCore, VIS_SCALE};
@@ -350,6 +351,7 @@ commands.spawn((
             EngineVisual,
             Name::new(format!("Bore {}", i + 1)),
             CylinderGasViz { idx: i, bore_material: bore_mat_handle.clone(), bank_tilt: tilt },
+            Pickable::IGNORE,
             PbrBundle {
                 mesh: bore_mesh.clone(),
                 material: bore_mat_handle,
@@ -381,6 +383,7 @@ commands.spawn((
                 base_color: block_base,
                 base_emissive: block_emissive,
             },
+            Pickable::IGNORE,
             PbrBundle {
                 mesh: block_slice_mesh.clone(),
                 material: block_mat,
