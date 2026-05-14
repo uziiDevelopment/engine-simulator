@@ -61,7 +61,7 @@ pub fn spawn(
 
             spawn_exhaust_manifold(
                 commands, meshes, exhaust_mat.clone(), cfg, head_y, groups.manifolds, s,
-                0, 0.0, Some(0),
+                0, 0.0,
             );
         }
         _ => {
@@ -91,11 +91,11 @@ pub fn spawn(
 
             spawn_exhaust_manifold(
                 commands, meshes, exhaust_mat.clone(), cfg, head_y, groups.manifolds, s,
-                0, tilt_a, Some(0),
+                0, tilt_a,
             );
             spawn_exhaust_manifold(
                 commands, meshes, exhaust_mat_b, cfg, head_y, groups.manifolds, s,
-                1, -tilt_a, Some(1),
+                1, -tilt_a,
             );
         }
     }
@@ -210,7 +210,6 @@ fn spawn_exhaust_manifold(
     s: f32,
     bank: usize,
     tilt: f32,
-    turbo_idx: Option<usize>,
 ) {
     // Cylinders on this bank, in X order
     let cyls: Vec<usize> = (0..cfg.num_cylinders)
@@ -307,25 +306,57 @@ fn spawn_exhaust_manifold(
         },
     )).set_parent(grp_manifolds);
 
-    let outlet_x = if outlet_sign > 0.0 { x_max } else { x_min };
-    let outlet_pos = tilt_position(outlet_x, coll_y_local, coll_z_local, tilt);
-    let outlet_flange_mesh = meshes.add(Cuboid::new(0.020 * s, 0.10 * s, 0.10 * s));
-    commands.spawn((
-        EngineVisual,
-        Name::new(format!("Exhaust Outlet Flange {}", bank)),
-        PbrBundle {
-            mesh: outlet_flange_mesh,
-            material: exhaust_mat.clone(),
-            transform: Transform::from_translation(outlet_pos)
-                .with_rotation(Quat::from_rotation_x(tilt)),
-            ..default()
-        },
-    )).set_parent(grp_manifolds);
+    let enabled_turbos: Vec<usize> = cfg.turbos.iter().enumerate()
+        .filter(|(_, t)| t.enabled)
+        .map(|(i, _)| i)
+        .collect();
+    
+    let bank_turbos: Vec<usize> = enabled_turbos.iter()
+        .copied()
+        .filter(|&i| {
+            if cfg.layout == EngineLayout::Inline {
+                bank == 0
+            } else {
+                i % 2 == bank
+            }
+        })
+        .collect();
 
-    commands.spawn((
-        EngineVisual,
-        ExhaustOutlet { turbo_idx, world_pos: outlet_pos },
-        Name::new(format!("Exhaust Outlet Marker {}", bank)),
-        SpatialBundle::from_transform(Transform::from_translation(outlet_pos)),
-    )).set_parent(grp_manifolds);
+    for (bt_idx, &turbo_idx) in bank_turbos.iter().enumerate() {
+        let frac = if bank_turbos.len() == 1 {
+            1.0
+        } else {
+            bt_idx as f32 / (bank_turbos.len() as f32 - 1.0)
+        };
+
+        // For outlet_sign > 0, x_min is front, x_max is rear.
+        // For outlet_sign < 0, x_max is front, x_min is rear.
+        let outlet_x = if outlet_sign > 0.0 {
+            x_min + (x_max - x_min) * (0.4 + 0.6 * frac)
+        } else {
+            x_max - (x_max - x_min) * (0.4 + 0.6 * frac)
+        };
+
+        let outlet_pos = tilt_position(outlet_x, coll_y_local, coll_z_local, tilt);
+        let outlet_flange_mesh = meshes.add(Cuboid::new(0.020 * s, 0.10 * s, 0.10 * s));
+        
+        commands.spawn((
+            EngineVisual,
+            Name::new(format!("Exhaust Outlet Flange {}:{}", bank, turbo_idx)),
+            PbrBundle {
+                mesh: outlet_flange_mesh,
+                material: exhaust_mat.clone(),
+                transform: Transform::from_translation(outlet_pos)
+                    .with_rotation(Quat::from_rotation_x(tilt)),
+                ..default()
+            },
+        )).set_parent(grp_manifolds);
+
+        commands.spawn((
+            EngineVisual,
+            ExhaustOutlet { turbo_idx: Some(turbo_idx), world_pos: outlet_pos },
+            Name::new(format!("Exhaust Outlet Marker {}:{}", bank, turbo_idx)),
+            SpatialBundle::from_transform(Transform::from_translation(outlet_pos)),
+        )).set_parent(grp_manifolds);
+    }
 }

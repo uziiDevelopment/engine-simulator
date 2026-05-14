@@ -301,4 +301,12 @@ impl EngineCore {
         self.coolant_temp_smoothed = T_ATM;
         self.throttle_smoothed = 0.0;
     }
+
+    /// Re-initialize turbo states from the current configuration.  Call this
+    /// after adding or removing turbos from `self.config.turbos`.
+    pub fn reinit_turbos(&mut self) {
+        self.turbos = self.config.turbos.iter()
+            .map(|cfg| TurboState::fresh(cfg))
+            .collect();
+    }
 }

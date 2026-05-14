@@ -250,47 +250,89 @@ fn ui_panel(
                 ui.separator();
                 ui.add_space(4.0);
 
-                // ── Turbocharger ─────────────────────────────────────────────
-                ui.collapsing(egui::RichText::new("Turbocharger").strong(), |ui| {
-                    // For multi-turbo: control first turbo config, show aggregate data
-                    let turbo_count = core.config.turbos.len();
-                    let has_turbo = turbo_count > 0;
+                // ── Turbochargers ───────────────────────────────────────────
+                ui.collapsing(egui::RichText::new("Turbochargers").strong(), |ui| {
+                    let mut turbos_to_remove = None;
+                    let mut turbos_changed = false;
 
-                    let mut enabled = core.config.turbo_enabled();
-                    if ui.checkbox(&mut enabled, format!("Enable Turbo ({}x)", turbo_count)).changed() {
-                        // Toggle first turbo's enabled state
-                        if let Some(first_turbo) = core.config.turbos.first_mut() {
-                            first_turbo.enabled = enabled;
+                    for (i, cfg) in core.config.turbos.iter_mut().enumerate() {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(format!("Turbo #{}", i + 1)).strong());
+                                if ui.checkbox(&mut cfg.enabled, "Enabled").changed() {
+                                    turbos_changed = true;
+                                }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button("🗑").clicked() {
+                                        turbos_to_remove = Some(i);
+                                    }
+                                });
+                            });
+
+                            if cfg.enabled {
+                                ui.add_space(2.0);
+                                // Boost control
+                                let mut psi = cfg.target_boost_pa / 6894.76;
+                                if ui.add(
+                                    egui::Slider::new(&mut psi, 0.0..=45.0)
+                                        .text("Target Boost")
+                                        .custom_formatter(|v, _| format!("{:.1} psi", v))
+                                ).changed() {
+                                    cfg.target_boost_pa = psi * 6894.76;
+                                }
+
+                                // Size control (impeller radius)
+                                let mut radius_mm = cfg.impeller_radius * 1000.0;
+                                if ui.add(
+                                    egui::Slider::new(&mut radius_mm, 15.0..=120.0)
+                                        .text("Impeller Size")
+                                        .custom_formatter(|v, _| format!("{:.0} mm", v))
+                                ).changed() {
+                                    cfg.impeller_radius = radius_mm / 1000.0;
+                                    // Scale flow areas and inertia with size.
+                                    // Base size is 30mm for the default scaling values.
+                                    let scale = (radius_mm / 30.0).powi(2);
+                                    cfg.turbine_area = 0.00060 * scale;
+                                    cfg.wastegate_area = 0.00040 * scale;
+                                    cfg.compressor_area = 0.00080 * scale;
+                                    cfg.shaft_inertia = 5.0e-6 * scale * scale; // I ∝ r⁴
+                                }
+
+                                ui.add(
+                                    egui::Slider::new(&mut cfg.intercooler_effectiveness, 0.0..=1.0)
+                                        .text("Intercooler")
+                                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+                                );
+                            }
+                        });
+                        ui.add_space(4.0);
+                    }
+
+                    if let Some(idx) = turbos_to_remove {
+                        core.config.turbos.remove(idx);
+                        turbos_changed = true;
+                    }
+
+                    if core.config.turbos.len() < 4 {
+                        if ui.button("+ Add Turbo").clicked() {
+                            let disp = core.config.total_displacement();
+                            let new_turbo = crate::engine::turbo::TurboConfig::for_displacement(disp);
+                            core.config.turbos.push(new_turbo);
+                            turbos_changed = true;
                         }
-                        // Reset turbo states and trigger visual rebuild.
-                        core.turbos = core.config.turbos.iter()
-                            .map(|cfg| crate::engine::turbo::TurboState::fresh(cfg))
-                            .collect();
+                    }
+
+                    if turbos_changed {
+                        core.reinit_turbos();
                         core.config_generation += 1;
                     }
+
                     if core.config.turbo_enabled() {
                         ui.add_space(4.0);
-                        // Control first turbo's target boost
-                        if let Some(first_cfg) = core.config.turbos.first_mut() {
-                            let mut target_psi = first_cfg.target_boost_pa / 6894.76;
-                            if ui.add(
-                                egui::Slider::new(&mut target_psi, 0.0..=36.0)
-                                    .text("Target Boost")
-                                    .custom_formatter(|v, _| format!("{:.1} psi", v))
-                            ).changed() {
-                                first_cfg.target_boost_pa = target_psi * 6894.76;
-                            }
-                            ui.add(
-                                egui::Slider::new(
-                                    &mut first_cfg.intercooler_effectiveness,
-                                    0.0..=1.0,
-                                )
-                                .text("Intercooler")
-                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
-                            );
-                        }
+                        ui.separator();
                         ui.add_space(4.0);
-                        // Show aggregate data from all turbos
+                        ui.label(egui::RichText::new("Aggregate Telemetry").small().strong());
+
                         let total_shaft_rpm: f32 = core.turbos.iter().map(|t| t.shaft_rpm()).sum();
                         let avg_shaft_rpm = if core.turbos.is_empty() { 0.0 } else { total_shaft_rpm / core.turbos.len() as f32 };
                         let max_boost = core.turbos.iter().map(|t| t.boost_gauge_pa()).fold(0.0_f32, f32::max);
@@ -300,19 +342,19 @@ fn ui_panel(
                         let max_temp = core.turbos.iter().map(|t| t.compressor_outlet_temp).fold(0.0_f32, f32::max);
 
                         ui.label(egui::RichText::new(format!(
-                            "Shaft: {:>6.0} RPM (avg)",
+                            "Shaft Speed:  {:>6.0} RPM (avg)",
                             avg_shaft_rpm
                         )).monospace().small());
                         ui.label(egui::RichText::new(format!(
-                            "Boost: {:>+5.1} psi (max)",
+                            "Max Boost:    {:>+5.1} psi",
                             max_boost / 6894.76
                         )).monospace().small());
                         ui.label(egui::RichText::new(format!(
-                            "Wastegate: {:>3.0}% (avg)",
+                            "Wastegate:    {:>3.0}% open (avg)",
                             avg_wastegate * 100.0
                         )).monospace().small());
                         ui.label(egui::RichText::new(format!(
-                            "Charge T: {:>4.0} K (max)",
+                            "Charge Temp:  {:>4.0} K (peak)",
                             max_temp
                         )).monospace().small());
                     }

@@ -536,9 +536,10 @@ pub fn step_cylinder_cfg(
             let air_mass = (cyl.air_frac * cyl.mass).max(0.0);
             
             // Simple idle governor: maintain ~650 RPM by adding fuel if low.
+            // Sized for large engines with significant internal friction.
             let idle_target = 650.0;
             let idle_error = (idle_target - rpm).max(0.0);
-            let idle_fuel = (idle_error * 0.0015).min(0.12);
+            let idle_fuel = (idle_error * 0.0020).min(0.25);
             let fuel_demand = (throttle + idle_fuel).clamp(0.0, 1.0);
 
             let fuel_to_inject = (air_mass / fuel.afr_target.max(1.0)) * fuel_demand;
