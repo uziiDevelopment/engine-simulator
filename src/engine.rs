@@ -325,6 +325,7 @@ pub fn engine_step(
             ref mut intake, ref mut exhaust,
             ref mut turbos,
             ref oil_config, ref oil,
+            throttle,
             ..
         } = *core;
 
@@ -405,6 +406,7 @@ pub fn engine_step(
                 dt,
                 combustion_enabled,
                 omega,
+                throttle,
             );
             let derated = tau * compression_factor * cyl_alive;
             total_torque_from_gas += derated;

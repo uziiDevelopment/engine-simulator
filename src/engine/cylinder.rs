@@ -198,6 +198,7 @@ pub fn step_cylinder(
     fourstroke_new: f32,
     dt: f32,
     combustion_enabled: bool,
+    throttle: f32,
 ) -> (f32, f32) {
     // ── Volume + valve geometry ────────────────────────────────────────────
     let v_old = cyl_volume(angle_old, cyl_idx);
@@ -348,7 +349,11 @@ pub fn step_cylinder(
         let throttle_factor = (intake.pressure() / P_ATM).clamp(0.0, 1.5);
         let enrichment = 1.0 + (fuel.power_enrichment - 1.0) * (throttle_factor - 0.4).clamp(0.0, 1.0);
         let target_afr = (fuel.afr_target / enrichment).max(0.5);
-        let mass_fuel_added = dm_in / (1.0 + target_afr);
+        
+        // SI engines use port injection, but for consistency we still apply
+        // the throttle scaling here (though it's usually 1.0 for SI as the
+        // manifold pressure already handles the air/fuel reduction).
+        let mass_fuel_added = (dm_in / (1.0 + target_afr)) * throttle.max(0.01);
         let mass_air_added  = dm_in - mass_fuel_added;
 
         let air_total    = cyl.air_frac    * mass_before + mass_air_added;
@@ -424,6 +429,7 @@ pub fn step_cylinder_cfg(
     dt: f32,
     combustion_enabled: bool,
     omega: f32,
+    throttle: f32,
 ) -> (f32, f32) {
     // ── Volume + valve geometry ────────────────────────────────────────────
     let v_old = cfg.cyl_volume(angle_old, cyl_idx);
@@ -503,32 +509,77 @@ pub fn step_cylinder_cfg(
     cyl.last_intake_flow  = m_dot_in;
     cyl.last_exhaust_flow = m_dot_out;
 
-    // ── Spark detection ────────────────────────────────────────────────────
+    // ── Ignition / injection detection ────────────────────────────────────
     let firing_offset = cfg.firing_offsets_deg[cyl_idx].to_radians();
     let phase_4s = (fourstroke_new - firing_offset).rem_euclid(4.0 * PI);
 
+    // Re-arm during the exhaust stroke (π..2π local) for both SI and CI.
     if phase_4s > PI && phase_4s < 2.0 * PI {
         cyl.spark_armed = true;
         cyl.burning = false;
         cyl.burn_progress = 0.0;
     }
 
-    // Bug 5 fix: RPM-dependent spark advance.
-    // Flame propagation takes roughly constant time, so advance must increase
-    // with RPM.  Ramps from 8° at idle to fuel.spark_advance_deg at 4000 RPM.
     let rpm = omega.abs() * 30.0 / PI;
-    let rpm_factor = ((rpm - 1000.0) / 3000.0).clamp(0.0, 1.0);
-    let advance_deg = 8.0 + (fuel.spark_advance_deg - 8.0) * rpm_factor;
-    let spark_phase = 4.0 * PI - advance_deg.to_radians();
-    if cyl.spark_armed && phase_4s >= spark_phase && phase_4s < 4.0 * PI {
-        if combustion_enabled {
-            cyl.burning = true;
-            cyl.crank_at_spark = phase_4s;
-            cyl.burn_progress = 0.0;
+
+    if fuel.is_ci {
+        // ── Compression-ignition path (Diesel) ────────────────────────────────
+        //
+        // Fuel is injected directly into hot compressed air near TDC.
+        // Auto-ignition occurs when bulk temperature exceeds the threshold
+        // (always true at operating CR ≥ 14 once the engine is warm).
+        // `spark_advance_deg` is reused as injection advance in degrees BTDC.
+        let injection_phase = 4.0 * PI - fuel.spark_advance_deg.to_radians();
+        if cyl.spark_armed && phase_4s >= injection_phase && phase_4s < 4.0 * PI {
+            // Direct injection: add fuel proportional to trapped air mass,
+            // scaled by the player's throttle and an idle governor.
+            let air_mass = (cyl.air_frac * cyl.mass).max(0.0);
+            
+            // Simple idle governor: maintain ~650 RPM by adding fuel if low.
+            let idle_target = 650.0;
+            let idle_error = (idle_target - rpm).max(0.0);
+            let idle_fuel = (idle_error * 0.0015).min(0.12);
+            let fuel_demand = (throttle + idle_fuel).clamp(0.0, 1.0);
+
+            let fuel_to_inject = (air_mass / fuel.afr_target.max(1.0)) * fuel_demand;
+            if fuel_to_inject > 1e-12 {
+                let new_mass = cyl.mass + fuel_to_inject;
+                cyl.air_frac    = (cyl.air_frac    * cyl.mass) / new_mass;
+                cyl.fuel_frac   = (cyl.fuel_frac   * cyl.mass + fuel_to_inject) / new_mass;
+                cyl.burned_frac = (cyl.burned_frac * cyl.mass) / new_mass;
+                cyl.mass = new_mass;
+            }
             cyl.fuel_to_burn = (cyl.fuel_frac * cyl.mass).max(0.0);
-            cyl.flash = 1.0;
+            // Auto-ignition: fires if cylinder temperature exceeds threshold.
+            // At compression ratios ≥ 14:1 the bulk gas temperature at TDC
+            // easily exceeds 523 K (250 °C) once cranking is underway.
+            if cyl.temperature > fuel.auto_ignition_temp && combustion_enabled {
+                cyl.burning = true;
+                cyl.crank_at_spark = phase_4s;
+                cyl.burn_progress = 0.0;
+                cyl.flash = 1.0;
+            }
+            cyl.spark_armed = false;
         }
-        cyl.spark_armed = false;
+    } else {
+        // ── Spark-ignition path (SI) ───────────────────────────────────────
+        //
+        // RPM-dependent spark advance: flame propagation takes roughly constant
+        // time, so advance must increase with RPM.  Ramps from 8° at idle to
+        // fuel.spark_advance_deg at 4000 RPM.
+        let rpm_factor = ((rpm - 1000.0) / 3000.0).clamp(0.0, 1.0);
+        let advance_deg = 8.0 + (fuel.spark_advance_deg - 8.0) * rpm_factor;
+        let spark_phase = 4.0 * PI - advance_deg.to_radians();
+        if cyl.spark_armed && phase_4s >= spark_phase && phase_4s < 4.0 * PI {
+            if combustion_enabled {
+                cyl.burning = true;
+                cyl.crank_at_spark = phase_4s;
+                cyl.burn_progress = 0.0;
+                cyl.fuel_to_burn = (cyl.fuel_frac * cyl.mass).max(0.0);
+                cyl.flash = 1.0;
+            }
+            cyl.spark_armed = false;
+        }
     }
 
     // ── Wiebe heat release ─────────────────────────────────────────────────
@@ -619,19 +670,32 @@ pub fn step_cylinder_cfg(
     let new_mass = (mass_before + dm_in - dm_out).max(1e-9);
 
     if dm_in > 0.0 {
-        let throttle_factor = (intake.pressure() / P_ATM).clamp(0.0, 1.5);
-        let enrichment = 1.0 + (fuel.power_enrichment - 1.0) * (throttle_factor - 0.4).clamp(0.0, 1.0);
-        let target_afr = (fuel.afr_target / enrichment).max(0.5);
-        let mass_fuel_added = dm_in / (1.0 + target_afr);
-        let mass_air_added  = dm_in - mass_fuel_added;
+        if fuel.is_ci {
+            // Diesel direct injection: intake charge is pure air only.
+            // Fuel is added later at the injection event (CI path above), not here.
+            let air_total    = cyl.air_frac    * mass_before + dm_in;
+            let fuel_total   = cyl.fuel_frac   * mass_before;
+            let burned_total = cyl.burned_frac * mass_before;
+            let total = (air_total + fuel_total + burned_total).max(1e-9);
+            cyl.air_frac    = air_total    / total;
+            cyl.fuel_frac   = fuel_total   / total;
+            cyl.burned_frac = burned_total / total;
+        } else {
+            // SI port injection: fuel is pre-mixed with the incoming air charge.
+            let throttle_factor = (intake.pressure() / P_ATM).clamp(0.0, 1.5);
+            let enrichment = 1.0 + (fuel.power_enrichment - 1.0) * (throttle_factor - 0.4).clamp(0.0, 1.0);
+            let target_afr = (fuel.afr_target / enrichment).max(0.5);
+            let mass_fuel_added = dm_in / (1.0 + target_afr);
+            let mass_air_added  = dm_in - mass_fuel_added;
 
-        let air_total    = cyl.air_frac    * mass_before + mass_air_added;
-        let fuel_total   = cyl.fuel_frac   * mass_before + mass_fuel_added;
-        let burned_total = cyl.burned_frac * mass_before;
-        let total = (air_total + fuel_total + burned_total).max(1e-9);
-        cyl.air_frac    = air_total    / total;
-        cyl.fuel_frac   = fuel_total   / total;
-        cyl.burned_frac = burned_total / total;
+            let air_total    = cyl.air_frac    * mass_before + mass_air_added;
+            let fuel_total   = cyl.fuel_frac   * mass_before + mass_fuel_added;
+            let burned_total = cyl.burned_frac * mass_before;
+            let total = (air_total + fuel_total + burned_total).max(1e-9);
+            cyl.air_frac    = air_total    / total;
+            cyl.fuel_frac   = fuel_total   / total;
+            cyl.burned_frac = burned_total / total;
+        }
     } else if dm_out < 0.0 {
         let mass_back = -dm_out;
         let burned_total = cyl.burned_frac * mass_before + mass_back;

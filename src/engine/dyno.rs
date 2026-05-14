@@ -97,10 +97,10 @@ impl Default for DynoState {
             active: false,
             phase:  DynoPhase::Idle,
 
-            start_rpm: 1000.0,
+            start_rpm: 500.0,
             end_rpm:   8000.0,
-            sample_interval: 100.0,
-            ramp_rate: 400.0,  // RPM/s — takes ~17.5s to sweep 1000→8000
+            sample_interval: 25.0,
+            ramp_rate: 270.0,  // RPM/s — takes ~17.5s to sweep 1000→8000
 
             target_rpm:        1000.0,
             next_sample_rpm:   1000.0,
